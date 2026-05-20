@@ -40,6 +40,30 @@ namespace EditorBrowser
             win.Focus();
         }
 
+        // Tab 이동 추종 검증용 — 현재 위치에서 (+200, +100) 이동 + 사이즈 -20 변경.
+        // 사용자가 Tab을 잡고 옮기는 것을 시뮬레이트하여 Chrome 추종 동작 확인.
+        [MenuItem("Window/Editor Browser Test Move", priority = 2013)]
+        public static void TestMove()
+        {
+            var wins = Resources.FindObjectsOfTypeAll<BrowserWindow>();
+            if (wins == null || wins.Length == 0) { Debug.Log($"{LogPrefix} TestMove: BrowserWindow 없음"); return; }
+            var w = wins[0];
+            var p = w.position;
+            w.position = new Rect(p.x + 200f, p.y + 100f, Mathf.Max(p.width - 20f, 200f), Mathf.Max(p.height - 20f, 200f));
+            Debug.Log($"{LogPrefix} TestMove: {p} → {w.position}");
+        }
+
+        [MenuItem("Window/Editor Browser Test Resize", priority = 2014)]
+        public static void TestResize()
+        {
+            var wins = Resources.FindObjectsOfTypeAll<BrowserWindow>();
+            if (wins == null || wins.Length == 0) return;
+            var w = wins[0];
+            var p = w.position;
+            w.position = new Rect(p.x, p.y, p.width + 150f, p.height + 100f);
+            Debug.Log($"{LogPrefix} TestResize: {p} → {w.position}");
+        }
+
         // 별도 경로로 분리 — Window/Editor Browser (leaf) 와 Window/Editor Browser/<sub> 가 같은 path에
         // 동시 존재하면 Unity 메뉴 트리가 leaf 항목을 숨길 수 있음.
         [MenuItem("Window/Editor Browser Diagnostics", priority = 2012)]

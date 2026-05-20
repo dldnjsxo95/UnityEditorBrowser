@@ -121,10 +121,19 @@ namespace EditorBrowser
             }
 
             // owner-popup 모델 — 좌표는 절대 스크린 픽셀 그대로 사용 (client 변환 X)
-            // drift gate: 위치/사이즈가 직전과 동일하면 SetWindowPos 호출 생략.
-            // (z-order 강제는 어떤 빈도로도 Chrome paint cycle 을 망가뜨려 흰 화면 유발 — 제거)
+            //
+            // drift gate: 위치/사이즈가 직전과 동일하면 무거운 SetWindowPos 는 생략하되,
+            // **HWND_TOPMOST 만은 매 sync 유지** — 사용자가 Tab 을 잡고 움직이면 BrowserWindow
+            // floating HWND 가 활성화되어 일반 top-level 인 Chrome HWND 를 가린다. TOPMOST 로
+            // 설정하면 활성화 무관하게 항상 모든 윈도우 위.
+            // SetWindowPos(HWND_TOPMOST, NOMOVE+NOSIZE+NOACTIVATE) 는 이미 topmost 인 윈도우엔
+            // no-op 이므로 paint 사이클을 깨뜨리지 않는다.
             if (_visible && absX == _lastX && absY == _lastY && absW == _lastW && absH == _lastH)
+            {
+                Win32.SetWindowPos(_browserHwnd, Win32.HWND_TOPMOST, 0, 0, 0, 0,
+                    Win32.SWP_NOMOVE | Win32.SWP_NOSIZE | Win32.SWP_NOACTIVATE);
                 return;
+            }
 
             _lastX = absX; _lastY = absY; _lastW = absW; _lastH = absH;
 
@@ -138,8 +147,9 @@ namespace EditorBrowser
             var winW = absW;
             var winH = absH + FakeTitlebarHeight;
 
+            // HWND_TOPMOST + SWP_FRAMECHANGED — 위치/사이즈 변경 + topmost 유지
             Win32.SetWindowPos(
-                _browserHwnd, Win32.HWND_TOP,
+                _browserHwnd, Win32.HWND_TOPMOST,
                 winX, winY, winW, winH,
                 Win32.SWP_NOACTIVATE | Win32.SWP_FRAMECHANGED);
 
@@ -342,8 +352,8 @@ namespace EditorBrowser
             ex |= Win32.WS_EX_TOOLWINDOW;
             Win32.SetWindowLongPtr(found, Win32.GWL_EXSTYLE, new IntPtr(unchecked((int)ex)));
 
-            // 4) 스타일 변경 적용 (위치/사이즈는 다음 SyncBoundsAbsoluteScreen에서 설정)
-            Win32.SetWindowPos(found, Win32.HWND_TOP, 0, 0, 0, 0,
+            // 4) 스타일 변경 적용 + HWND_TOPMOST 로 영구 최상단 (위치/사이즈는 다음 sync에서 설정)
+            Win32.SetWindowPos(found, Win32.HWND_TOPMOST, 0, 0, 0, 0,
                 Win32.SWP_NOMOVE | Win32.SWP_NOSIZE | Win32.SWP_NOACTIVATE
                 | Win32.SWP_FRAMECHANGED);
 
