@@ -52,6 +52,11 @@ namespace EditorBrowser
         // 3초: Google 검색 페이지 정도면 충분히 로드/페인트 완료되는 시간.
         private static readonly TimeSpan AttachMinDelay = TimeSpan.FromMilliseconds(3000);
 
+        // Chrome --app= 모드의 client area 내부 fake titlebar 높이 (실측).
+        // 윈도우 사이즈를 이만큼 확장하고 SetWindowRgn으로 titlebar 영역을 cut-out 해서
+        // 페이지 컨텐츠 영역만 EditorWindow body에 표시되게 한다.
+        private const int FakeTitlebarHeight = 32;
+
         private int _lastX, _lastY, _lastW, _lastH;
 
         public bool IsAlive => _process != null && !_process.HasExited;
@@ -106,15 +111,28 @@ namespace EditorBrowser
 
             _lastX = absX; _lastY = absY; _lastW = absW; _lastH = absH;
 
-            // HWND_TOP + SWP_FRAMECHANGED — Chrome 내부 layout 재계산 트리거.
+            // === PWA fake titlebar cut-out 전략 ===
+            // Chrome HWND 의 좌상단을 EditorWindow body 좌상단과 일치시키고, 사이즈를 아래로
+            // FakeTitlebarHeight 만큼 확장. SetWindowRgn 으로 윗 FakeTitlebarHeight 영역을 cut-out
+            // 하면 fake titlebar 는 안 보이고, 페이지 컨텐츠는 body 영역의 아래쪽부터 표시된다.
+            // EditorWindow toolbar 는 body 위에 있으므로 절대 침범 안 함.
+            var winX = absX;
+            var winY = absY;
+            var winW = absW;
+            var winH = absH + FakeTitlebarHeight;
+
             Win32.SetWindowPos(
                 _browserHwnd, Win32.HWND_TOP,
-                absX, absY, absW, absH,
+                winX, winY, winW, winH,
                 Win32.SWP_NOACTIVATE | Win32.SWP_FRAMECHANGED);
 
-            // Chrome에 WM_SIZE 명시 전송 — SetWindowPos가 보내지 않는 경우 대비. Chrome의 views
-            // 프레임워크가 페이지 재 layout 하게 만든다. lParam = HIWORD:height, LOWORD:width.
-            var sizeLParam = new IntPtr(((absH & 0xFFFF) << 16) | (absW & 0xFFFF));
+            // 윈도우 region: 위쪽 FakeTitlebarHeight 영역을 제외한 영역만 visible (fake titlebar cut-out)
+            var rgn = Win32.CreateRectRgn(0, FakeTitlebarHeight, winW, winH);
+            Win32.SetWindowRgn(_browserHwnd, rgn, true);
+            // rgn 소유권은 SetWindowRgn 호출 후 OS로 이전 — 직접 DeleteObject 호출 금지
+
+            // Chrome에 WM_SIZE 명시 전송
+            var sizeLParam = new IntPtr(((winH & 0xFFFF) << 16) | (winW & 0xFFFF));
             Win32.PostMessage(_browserHwnd, Win32.WM_SIZE,
                 new IntPtr((int)Win32.SIZE_RESTORED), sizeLParam);
 
@@ -124,7 +142,6 @@ namespace EditorBrowser
                 _visible = true;
             }
 
-            // 매 sync 마다 RedrawWindow — Chrome surface invalidate 강제하여 페이지 컨텐츠 paint 트리거
             Win32.RedrawWindow(_browserHwnd, IntPtr.Zero, IntPtr.Zero,
                 Win32.RDW_INVALIDATE | Win32.RDW_ERASE | Win32.RDW_FRAME
                 | Win32.RDW_ALLCHILDREN | Win32.RDW_UPDATENOW);

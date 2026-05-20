@@ -173,5 +173,17 @@ namespace EditorBrowser.Native
 
         [DllImport("user32.dll")]
         public static extern IntPtr SendMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
+        // ----- Region (GDI) — Chrome PWA fake titlebar cut-out 용 -----
+        [DllImport("gdi32.dll")]
+        public static extern IntPtr CreateRectRgn(int nLeftRect, int nTopRect, int nRightRect, int nBottomRect);
+
+        [DllImport("gdi32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool DeleteObject(IntPtr hObject);
+
+        /// <summary>SetWindowRgn — 윈도우의 visible region 설정. bRedraw=true 권장. hRgn 소유권은 OS로 이전.</summary>
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern int SetWindowRgn(IntPtr hWnd, IntPtr hRgn, [MarshalAs(UnmanagedType.Bool)] bool bRedraw);
     }
 }
