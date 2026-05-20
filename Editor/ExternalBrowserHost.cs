@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text;
 using EditorBrowser.Native;
 using UnityEngine;
@@ -39,7 +40,8 @@ namespace EditorBrowser
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "EditorBrowser", "BrowserProfile");
 
-        private Process _process;
+        private Process _process;   // cmd 프로세스 (곧 종료됨)
+        private int _chromePid;      // 진짜 Chrome 메인 프로세스 PID (BrowserProfile path 매칭으로 찾음)
         private IntPtr _browserHwnd;
         private IntPtr _unityHwnd;
         private bool _attached;
@@ -59,11 +61,24 @@ namespace EditorBrowser
 
         private int _lastX, _lastY, _lastW, _lastH;
 
-        public bool IsAlive => _process != null && !_process.HasExited;
+        // z-order 강제 갱신 빈도 제한 — 매 sync(16ms) 마다 호출하면 Chrome paint 사이클이 망가져
+        // 페이지가 안 그려진다. 500ms 마다 한 번씩만 강제.
+        private DateTime _lastZOrderForceUtc = DateTime.MinValue;
+        private static readonly TimeSpan ZOrderForceInterval = TimeSpan.FromMilliseconds(500);
+
+        public bool IsAlive
+        {
+            get
+            {
+                if (_chromePid <= 0) return _process != null && !_process.HasExited;
+                try { var p = Process.GetProcessById(_chromePid); return !p.HasExited; }
+                catch { return false; }
+            }
+        }
         public bool IsAttached => _attached && _browserHwnd != IntPtr.Zero && Win32.IsWindow(_browserHwnd);
         public IntPtr BrowserHwnd => _browserHwnd;
         public IntPtr UnityHwnd => _unityHwnd;
-        public int ProcessId => _process?.Id ?? 0;
+        public int ProcessId => _chromePid > 0 ? _chromePid : (_process?.Id ?? 0);
 
         /// <summary>
         /// 새 URL로 네비게이트. 미실행 시 프로세스 시작, 실행 중이면 재시작.
@@ -90,7 +105,8 @@ namespace EditorBrowser
         /// </summary>
         public void SyncBoundsAbsoluteScreen(int absX, int absY, int absW, int absH)
         {
-            if (!IsAlive) return;
+            // IsAlive 체크 제거 — cmd 가 종료된 직후엔 _chromePid 가 아직 안 채워져 false 반환.
+            // TryAttach 내부에서 alive 체크 한다.
             if (!_attached && !TryAttach()) return;
             if (!Win32.IsWindow(_browserHwnd))
             {
@@ -105,7 +121,8 @@ namespace EditorBrowser
             }
 
             // owner-popup 모델 — 좌표는 절대 스크린 픽셀 그대로 사용 (client 변환 X)
-            // drift gate: 직전과 동일하면 SetWindowPos 호출 생략
+            // drift gate: 위치/사이즈가 직전과 동일하면 SetWindowPos 호출 생략.
+            // (z-order 강제는 어떤 빈도로도 Chrome paint cycle 을 망가뜨려 흰 화면 유발 — 제거)
             if (_visible && absX == _lastX && absY == _lastY && absW == _lastW && absH == _lastH)
                 return;
 
@@ -226,26 +243,42 @@ namespace EditorBrowser
                 $"--app={url} " +
                 $"--user-data-dir=\"{UserDataDirRoot}\" " +
                 "--no-first-run --no-default-browser-check --disable-popup-blocking " +
+                "--remote-debugging-port=9222 " +
                 "--window-position=200,200 --window-size=1024,768";
 
-            var psi = new ProcessStartInfo
-            {
-                FileName = info.ExecutablePath,
-                Arguments = args,
-                UseShellExecute = false,
-                CreateNoWindow = false,
-            };
+            // **핵심**: Unity 에디터는 자식 프로세스들을 Job Object 에 묶는다(2026-05-21 IsProcessInJob 검증).
+            // Job Object 의 limit 가 Chrome paint 사이클을 차단해 흰 화면 유발. CreateProcess 의
+            // CREATE_BREAKAWAY_FROM_JOB 플래그로 Job Object 탈출 + DETACHED_PROCESS 로 콘솔 분리.
+            var quotedExe = "\"" + info.ExecutablePath + "\"";
+            var commandLine = quotedExe + " " + args;
+            var startupInfo = new Native.Win32.STARTUPINFO();
+            startupInfo.cb = Marshal.SizeOf(startupInfo);
+            const uint flags = Native.Win32.CREATE_BREAKAWAY_FROM_JOB
+                               | Native.Win32.DETACHED_PROCESS
+                               | Native.Win32.CREATE_NEW_PROCESS_GROUP;
+            var ok = Native.Win32.CreateProcess(
+                lpApplicationName: null,
+                lpCommandLine: commandLine,
+                lpProcessAttributes: IntPtr.Zero,
+                lpThreadAttributes: IntPtr.Zero,
+                bInheritHandles: false,
+                dwCreationFlags: flags,
+                lpEnvironment: IntPtr.Zero,
+                lpCurrentDirectory: System.IO.Path.GetDirectoryName(info.ExecutablePath) ?? string.Empty,
+                lpStartupInfo: ref startupInfo,
+                lpProcessInformation: out var procInfo);
 
-            try
+            if (!ok)
             {
-                _process = Process.Start(psi);
-            }
-            catch (Exception ex)
-            {
-                Debug.LogError($"{LogPrefix} 브라우저 프로세스 시작 실패: {ex.Message}");
-                _process = null;
+                Debug.LogError($"{LogPrefix} CreateProcess 실패 (lastError={Marshal.GetLastWin32Error()})");
                 return;
             }
+
+            // 핸들 즉시 close — process 는 detached로 계속 살아 있음
+            Native.Win32.CloseHandle(procInfo.hThread);
+            Native.Win32.CloseHandle(procInfo.hProcess);
+            _chromePid = procInfo.dwProcessId;
+            _process = null;
 
             _unityHwnd = Process.GetCurrentProcess().MainWindowHandle;
             _browserHwnd = IntPtr.Zero;
@@ -265,12 +298,19 @@ namespace EditorBrowser
         /// </summary>
         private bool TryAttach()
         {
-            if (_process == null || _process.HasExited) return false;
-
             // surface init 안정화 대기
             if (DateTime.UtcNow - _processStartUtc < AttachMinDelay) return false;
 
-            var found = FindChromeAppWindowByPid((uint)_process.Id);
+            // 진짜 Chrome PID 찾기 — cmd /c start 로 spawn 했기 때문에 _process 는 곧 종료되는 cmd.
+            // BrowserProfile path 를 명령행에 포함하는 chrome.exe 프로세스를 WMI 로 찾는다.
+            if (_chromePid <= 0)
+            {
+                _chromePid = FindChromePidByProfilePath();
+                if (_chromePid <= 0) return false;
+                Debug.Log($"{LogPrefix} 진짜 Chrome PID 찾음: {_chromePid}");
+            }
+
+            var found = FindChromeAppWindowByPid((uint)_chromePid);
             if (found == IntPtr.Zero) return false;
 
             // 부모 결정 — Unity 메인 HWND
@@ -313,6 +353,46 @@ namespace EditorBrowser
 
             Debug.Log($"{LogPrefix} HWND 부착 완료 hwnd=0x{found.ToInt64():X} (HIDE 상태, 다음 sync에서 위치 적용 + SHOW)");
             return true;
+        }
+
+        /// <summary>
+        /// BrowserProfile 디렉토리를 명령행에 포함하는 chrome.exe 프로세스를 찾아 PID 반환.
+        /// Unity 환경에서 System.Management 어셈블리 참조가 까다로워 외부 wmic 명령어로 우회.
+        /// </summary>
+        private static int FindChromePidByProfilePath()
+        {
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = "wmic",
+                    Arguments = "process where \"name='chrome.exe'\" get processid,commandline /format:csv",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    CreateNoWindow = true,
+                };
+                using var p = Process.Start(psi);
+                if (p == null) return 0;
+                var output = p.StandardOutput.ReadToEnd();
+                p.WaitForExit(3000);
+
+                foreach (var line in output.Split('\n'))
+                {
+                    if (line.IndexOf("EditorBrowser\\BrowserProfile", StringComparison.OrdinalIgnoreCase) < 0) continue;
+                    if (line.IndexOf("--app=", StringComparison.OrdinalIgnoreCase) < 0) continue;
+                    if (line.IndexOf("--type=", StringComparison.OrdinalIgnoreCase) >= 0) continue;
+                    // CSV /format:csv → Node,CommandLine,ProcessId — 마지막 컬럼이 PID
+                    var lastComma = line.LastIndexOf(',');
+                    if (lastComma < 0) continue;
+                    var pidStr = line.Substring(lastComma + 1).Trim();
+                    if (int.TryParse(pidStr, out var pid) && pid > 0) return pid;
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"{LogPrefix} wmic Chrome PID 검색 실패: {ex.Message}");
+            }
+            return 0;
         }
 
         /// <summary>
@@ -379,16 +459,24 @@ namespace EditorBrowser
 
         private void DisposeProcess()
         {
-            try
-            {
-                if (_process != null && !_process.HasExited)
-                    _process.Kill();
-            }
-            catch { /* 이미 종료된 경우 등 */ }
-
+            // cmd 프로세스는 보통 이미 종료된 상태
+            try { if (_process != null && !_process.HasExited) _process.Kill(); } catch { }
             try { _process?.Dispose(); } catch { }
 
+            // 진짜 Chrome 프로세스 종료
+            if (_chromePid > 0)
+            {
+                try
+                {
+                    var p = Process.GetProcessById(_chromePid);
+                    if (!p.HasExited) p.Kill();
+                    p.Dispose();
+                }
+                catch { /* 이미 종료된 경우 등 */ }
+            }
+
             _process = null;
+            _chromePid = 0;
             _browserHwnd = IntPtr.Zero;
             _attached = false;
             _visible = false;

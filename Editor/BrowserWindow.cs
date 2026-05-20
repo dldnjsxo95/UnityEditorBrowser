@@ -221,7 +221,17 @@ namespace EditorBrowser
             var absW = Mathf.RoundToInt(bound.width * scale);
             var absH = Mathf.RoundToInt(bound.height * scale);
 
+            // 진단용: 좌표 계산 디버그. floating EditorWindow에서 OS 캡션 두께만큼 어긋나는
+            // 경우를 식별하기 위해 한 번씩만 로그 (계속 찍히면 콘솔 폭증).
+            if (Time.realtimeSinceStartup - _lastCoordsLogTime > 5f)
+            {
+                _lastCoordsLogTime = Time.realtimeSinceStartup;
+                Debug.Log($"{LogPrefix} COORDS winPos=({winPos.x:F1},{winPos.y:F1}) wPos.size=({winPos.width:F1},{winPos.height:F1}) bound=({bound.x:F1},{bound.y:F1}) bound.size=({bound.width:F1},{bound.height:F1}) scale={scale:F2} → abs=({absX},{absY}) {absW}x{absH}");
+            }
+
             _host.SyncBoundsAbsoluteScreen(absX, absY, absW, absH);
         }
+
+        private float _lastCoordsLogTime;
     }
 }
