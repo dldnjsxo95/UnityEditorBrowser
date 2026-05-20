@@ -51,8 +51,10 @@ namespace EditorBrowser
 
         // Chrome init + 페이지 첫 페인트 완료 보장 — spawn 직후 즉시 reparent 하면 surface가 깨지고
         // 페이지 로드 전에 옮기면 빈 화면이 됨. 최소 이만큼 경과 후에만 attach 시도.
-        // 3초: Google 검색 페이지 정도면 충분히 로드/페인트 완료되는 시간.
-        private static readonly TimeSpan AttachMinDelay = TimeSpan.FromMilliseconds(3000);
+        // 1.2초: 정확한 위치에 spawn 하므로 위치 이동 필요 없음. style strip + region cut-out 만 충분.
+        // (이전 3초는 좌측 상단 spawn 후 사용자에게 보이는 시간을 최대한 줄이려던 것 — 이제 처음부터
+        //  body 위치에 spawn 하므로 단축 가능.)
+        private static readonly TimeSpan AttachMinDelay = TimeSpan.FromMilliseconds(1200);
 
         // Chrome --app= 모드의 client area 내부 fake titlebar 높이 (실측).
         // 윈도우 사이즈를 이만큼 확장하고 SetWindowRgn으로 titlebar 영역을 cut-out 해서
@@ -81,10 +83,11 @@ namespace EditorBrowser
         public int ProcessId => _chromePid > 0 ? _chromePid : (_process?.Id ?? 0);
 
         /// <summary>
-        /// 새 URL로 네비게이트. 미실행 시 프로세스 시작, 실행 중이면 재시작.
-        /// (V1: chrome --app= 모드는 in-place 네비게이트가 까다로워 restart 채택. V2에서 CDP로 개선 가능.)
+        /// 새 URL 로 네비게이트 — Tab body 영역의 절대 스크린 좌표/사이즈를 전달하여
+        /// **spawn 시점부터** Chrome 윈도우를 그 위치에 띄운다. 좌측 상단 spawn 후 점프
+        /// 현상 제거.
         /// </summary>
-        public void Navigate(string url)
+        public void Navigate(string url, int bodyX, int bodyY, int bodyW, int bodyH)
         {
             if (string.IsNullOrEmpty(url)) return;
 
@@ -95,7 +98,7 @@ namespace EditorBrowser
             }
 
             if (IsAlive) DisposeProcess();
-            Start(url);
+            Start(url, bodyX, bodyY, bodyW, bodyH);
         }
 
         /// <summary>
@@ -224,7 +227,7 @@ namespace EditorBrowser
             return Application.platform == RuntimePlatform.WindowsEditor;
         }
 
-        private void Start(string url)
+        private void Start(string url, int bodyX, int bodyY, int bodyW, int bodyH)
         {
             var info = BrowserDetector.Detect();
             if (!info.IsAvailable)
@@ -241,20 +244,23 @@ namespace EditorBrowser
 
             // --app=url : 탭/주소창/메뉴 없는 PWA 앱 모드
             // --user-data-dir : 호스트 일반 프로필과 격리
-            // --window-position : 정상 화면 위치에 spawn해서 페이지가 제대로 첫 페인트 되게 한다.
+            // **--window-position/size**: 정확한 Tab body 위치/사이즈로 spawn — 좌측 상단 spawn 후
+            //   점프 현상 제거. FakeTitlebarHeight 만큼 height 확장(아래로) → SetWindowRgn cut-out 시
+            //   페이지가 body 안에서 자연스럽게 보임.
             //
             // **중요**: 다음 플래그는 페이지 렌더링 자체를 막아서 흰 화면을 유발하므로 절대 추가 금지
             //   - --in-process-gpu
             //   - --disable-gpu, --disable-gpu-compositing
             //   - --disable-features=CalculateNativeWinOcclusion
             //   - --disable-backgrounding-occluded-windows, --disable-renderer-backgrounding
-            //   (2026-05-20 실측: TestProfile2로 검증 — 우리 args 그대로의 독립 Chrome도 흰 화면)
+            var spawnW = Math.Max(bodyW, 200);
+            var spawnH = Math.Max(bodyH + FakeTitlebarHeight, 200);
             var args =
                 $"--app={url} " +
                 $"--user-data-dir=\"{UserDataDirRoot}\" " +
                 "--no-first-run --no-default-browser-check --disable-popup-blocking " +
                 "--remote-debugging-port=9222 " +
-                "--window-position=200,200 --window-size=1024,768";
+                $"--window-position={bodyX},{bodyY} --window-size={spawnW},{spawnH}";
 
             // **핵심**: Unity 에디터는 자식 프로세스들을 Job Object 에 묶는다(2026-05-21 IsProcessInJob 검증).
             // Job Object 의 limit 가 Chrome paint 사이클을 차단해 흰 화면 유발. CreateProcess 의
@@ -297,7 +303,7 @@ namespace EditorBrowser
             _processStartUtc = DateTime.UtcNow;
             _lastX = _lastY = _lastW = _lastH = int.MinValue;
 
-            Debug.Log($"{LogPrefix} 브라우저 시작 kind={info.Kind} pid={_process?.Id} url={url} (오프스크린 spawn)");
+            Debug.Log($"{LogPrefix} 브라우저 시작 kind={info.Kind} url={url} spawn=({bodyX},{bodyY}) {spawnW}x{spawnH}");
         }
 
         /// <summary>

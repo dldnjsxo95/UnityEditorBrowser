@@ -30,6 +30,9 @@ namespace EditorBrowser
         private Label _statusLabel;
         private VisualElement _body;
 
+        // 초기 spawn 은 body 가 layout 된 후에. CreateGUI 시점엔 worldBound 가 NaN/0 일 수 있음.
+        private string _pendingInitialUrl;
+
         [MenuItem(MenuPath, priority = 2010)]
         public static void OpenWindow()
         {
@@ -167,8 +170,13 @@ namespace EditorBrowser
             root.Add(_body);
             root.Add(statusBar);
 
-            // 초기 진입 — 홈페이지로 네비게이트
-            Navigate(UrlResolver.DefaultHomepage, pushHistory: true);
+            // 초기 진입 — body 가 layout 된 후 (첫 OnEditorUpdate) 에 spawn 한다.
+            // CreateGUI 시점엔 worldBound 가 아직 NaN 일 수 있어 spawn 위치 결정 불가.
+            _pendingInitialUrl = UrlResolver.DefaultHomepage;
+            _history.Push(_pendingInitialUrl);
+            _urlField.SetValueWithoutNotify(_pendingInitialUrl);
+            _statusLabel.text = $"Loading: {_pendingInitialUrl}";
+            UpdateNavButtonsState();
         }
 
         private void OnUrlFieldKeyDown(KeyDownEvent evt)
@@ -209,7 +217,29 @@ namespace EditorBrowser
             UpdateNavButtonsState();
 
             Debug.Log($"{LogPrefix} Navigate -> {url}");
-            _host?.Navigate(url);
+            if (_host == null) return;
+
+            // 현재 body 영역에서 spawn — 좌측 상단 점프 회피
+            var (x, y, w, h, valid) = ComputeBodyAbsRect();
+            if (valid) _host.Navigate(url, x, y, w, h);
+            else _pendingInitialUrl = url; // layout 안 됐으면 다음 update 에서 spawn
+        }
+
+        private (int x, int y, int w, int h, bool valid) ComputeBodyAbsRect()
+        {
+            if (_body == null) return (0, 0, 0, 0, false);
+            var bound = _body.worldBound;
+            if (float.IsNaN(bound.width) || float.IsNaN(bound.height)
+                || bound.width <= 1f || bound.height <= 1f)
+                return (0, 0, 0, 0, false);
+            var scale = EditorGUIUtility.pixelsPerPoint;
+            var winPos = position;
+            return (
+                Mathf.RoundToInt((winPos.x + bound.x) * scale),
+                Mathf.RoundToInt((winPos.y + bound.y) * scale),
+                Mathf.RoundToInt(bound.width * scale),
+                Mathf.RoundToInt(bound.height * scale),
+                true);
         }
 
         private void UpdateNavButtonsState()
@@ -226,36 +256,23 @@ namespace EditorBrowser
         {
             if (_host == null || _body == null) return;
 
-            var bound = _body.worldBound;
-            if (float.IsNaN(bound.width) || float.IsNaN(bound.height)
-                || bound.width <= 1f || bound.height <= 1f)
+            var (absX, absY, absW, absH, valid) = ComputeBodyAbsRect();
+            if (!valid)
             {
                 _host.Hide();
                 return;
             }
 
-            // EditorWindow의 position은 에디터 논리 좌표(점) 단위, screen-relative.
-            // body.worldBound는 EditorWindow 패널-로컬 좌표(점). 더하면 body의 절대 논리 스크린 위치.
-            // pixelsPerPoint로 픽셀 환산 — Win32는 픽셀 단위.
-            var scale = EditorGUIUtility.pixelsPerPoint;
-            var winPos = position;
-
-            var absX = Mathf.RoundToInt((winPos.x + bound.x) * scale);
-            var absY = Mathf.RoundToInt((winPos.y + bound.y) * scale);
-            var absW = Mathf.RoundToInt(bound.width * scale);
-            var absH = Mathf.RoundToInt(bound.height * scale);
-
-            // 진단용: 좌표 계산 디버그. floating EditorWindow에서 OS 캡션 두께만큼 어긋나는
-            // 경우를 식별하기 위해 한 번씩만 로그 (계속 찍히면 콘솔 폭증).
-            if (Time.realtimeSinceStartup - _lastCoordsLogTime > 5f)
+            // 초기 spawn 대기 중이면 body 위치 확보된 지금 spawn
+            if (_pendingInitialUrl != null)
             {
-                _lastCoordsLogTime = Time.realtimeSinceStartup;
-                Debug.Log($"{LogPrefix} COORDS winPos=({winPos.x:F1},{winPos.y:F1}) wPos.size=({winPos.width:F1},{winPos.height:F1}) bound=({bound.x:F1},{bound.y:F1}) bound.size=({bound.width:F1},{bound.height:F1}) scale={scale:F2} → abs=({absX},{absY}) {absW}x{absH}");
+                var url = _pendingInitialUrl;
+                _pendingInitialUrl = null;
+                _host.Navigate(url, absX, absY, absW, absH);
+                return;
             }
 
             _host.SyncBoundsAbsoluteScreen(absX, absY, absW, absH);
         }
-
-        private float _lastCoordsLogTime;
     }
 }
