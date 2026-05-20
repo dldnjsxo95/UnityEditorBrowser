@@ -40,6 +40,19 @@ namespace EditorBrowser
             win.Focus();
         }
 
+        [MenuItem("Window/Editor Browser/Diagnostics", priority = 2011)]
+        public static void DumpDiagnostics()
+        {
+            var win = Resources.FindObjectsOfTypeAll<BrowserWindow>();
+            if (win == null || win.Length == 0)
+            {
+                Debug.Log($"{LogPrefix} Diagnostics: BrowserWindow가 열려 있지 않음.");
+                return;
+            }
+            foreach (var w in win)
+                w._host?.DumpDiagnostics();
+        }
+
         private void OnEnable()
         {
             _host = new ExternalBrowserHost();

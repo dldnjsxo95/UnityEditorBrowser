@@ -130,11 +130,24 @@ namespace EditorBrowser.Native
         [DllImport("user32.dll", SetLastError = true)]
         public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
 
-        // EnumWindows로 PID 매칭 — Process.MainWindowHandle이 비어 있을 때 보조 검색용.
+        // EnumWindows로 PID 매칭 — Process.MainWindowHandle 의존 회피용.
         public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 
         [DllImport("user32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]
         public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern int GetClassName(IntPtr hWnd, System.Text.StringBuilder lpClassName, int nMaxCount);
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+
+        // ----- Z-order 상수 -----
+        public static readonly IntPtr HWND_TOP       = new IntPtr(0);
+        public static readonly IntPtr HWND_BOTTOM    = new IntPtr(1);
+        public static readonly IntPtr HWND_TOPMOST   = new IntPtr(-1);
+        public static readonly IntPtr HWND_NOTOPMOST = new IntPtr(-2);
     }
 }

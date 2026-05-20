@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Text;
 using EditorBrowser.Native;
 using UnityEngine;
 using Debug = UnityEngine.Debug;
@@ -22,6 +23,13 @@ namespace EditorBrowser
     {
         private const string LogPrefix = "[EditorBrowser]";
 
+        // 오프스크린 spawn 위치 — splash flash 방지
+        private const int OffscreenX = -32000;
+        private const int OffscreenY = -32000;
+
+        // Chrome/Edge 메인 앱 윈도우의 클래스명 접두 (Chrome_WidgetWin_0 또는 _1)
+        private const string ChromeWindowClassPrefix = "Chrome_WidgetWin_";
+
         private static readonly string UserDataDirRoot = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "EditorBrowser", "BrowserProfile");
@@ -37,6 +45,9 @@ namespace EditorBrowser
 
         public bool IsAlive => _process != null && !_process.HasExited;
         public bool IsAttached => _attached && _browserHwnd != IntPtr.Zero && Win32.IsWindow(_browserHwnd);
+        public IntPtr BrowserHwnd => _browserHwnd;
+        public IntPtr UnityHwnd => _unityHwnd;
+        public int ProcessId => _process?.Id ?? 0;
 
         /// <summary>
         /// 새 URL로 네비게이트. 미실행 시 프로세스 시작, 실행 중이면 재시작.
@@ -92,10 +103,11 @@ namespace EditorBrowser
 
             _lastX = pt.X; _lastY = pt.Y; _lastW = absW; _lastH = absH;
 
+            // hWndInsertAfter=HWND_TOP, SWP_NOZORDER 미지정 → 형제 중 최상단으로 끌어올림
             Win32.SetWindowPos(
-                _browserHwnd, IntPtr.Zero,
+                _browserHwnd, Win32.HWND_TOP,
                 pt.X, pt.Y, absW, absH,
-                Win32.SWP_NOZORDER | Win32.SWP_NOACTIVATE | Win32.SWP_ASYNCWINDOWPOS);
+                Win32.SWP_NOACTIVATE | Win32.SWP_ASYNCWINDOWPOS);
 
             if (!_visible)
             {
@@ -118,6 +130,35 @@ namespace EditorBrowser
             DisposeProcess();
         }
 
+        /// <summary>
+        /// 진단용 — 현재 host 상태와 실제 HWND 속성을 콘솔에 덤프.
+        /// read_console이 multi-line을 첫 줄만 보존하므로 각 항목을 개별 Log로 분리한다.
+        /// </summary>
+        public void DumpDiagnostics()
+        {
+            Debug.Log($"{LogPrefix} DIAG-01 IsAlive={IsAlive} IsAttached={IsAttached} _visible={_visible}");
+            Debug.Log($"{LogPrefix} DIAG-02 process pid={ProcessId} hasExited={_process?.HasExited.ToString() ?? "(null)"}");
+            Debug.Log($"{LogPrefix} DIAG-03 _browserHwnd=0x{_browserHwnd.ToInt64():X} _unityHwnd=0x{_unityHwnd.ToInt64():X}");
+            Debug.Log($"{LogPrefix} DIAG-04 lastRect=({_lastX},{_lastY}) {_lastW}x{_lastH}");
+
+            if (_browserHwnd != IntPtr.Zero && Win32.IsWindow(_browserHwnd))
+            {
+                var style = (uint)Win32.GetWindowLongPtr(_browserHwnd, Win32.GWL_STYLE).ToInt64();
+                var ex = (uint)Win32.GetWindowLongPtr(_browserHwnd, Win32.GWL_EXSTYLE).ToInt64();
+                Win32.GetWindowRect(_browserHwnd, out var rect);
+                var cn = new StringBuilder(256);
+                Win32.GetClassName(_browserHwnd, cn, cn.Capacity);
+                Debug.Log($"{LogPrefix} DIAG-05 style=0x{style:X} WS_CHILD={(style & Win32.WS_CHILD) != 0} WS_CAPTION={(style & Win32.WS_CAPTION) != 0} WS_VISIBLE={(style & Win32.WS_VISIBLE) != 0}");
+                Debug.Log($"{LogPrefix} DIAG-06 exstyle=0x{ex:X}");
+                Debug.Log($"{LogPrefix} DIAG-07 screenRect=({rect.Left},{rect.Top})-({rect.Right},{rect.Bottom}) size={rect.Right - rect.Left}x{rect.Bottom - rect.Top}");
+                Debug.Log($"{LogPrefix} DIAG-08 class='{cn}' IsWindowVisible={Win32.IsWindowVisible(_browserHwnd)}");
+            }
+            else
+            {
+                Debug.Log($"{LogPrefix} DIAG-05 (no valid browser hwnd to introspect)");
+            }
+        }
+
         // ----- internal helpers -----
 
         private static bool IsRunningOnWindows()
@@ -134,25 +175,20 @@ namespace EditorBrowser
                 return;
             }
 
-            try
-            {
-                Directory.CreateDirectory(UserDataDirRoot);
-            }
+            try { Directory.CreateDirectory(UserDataDirRoot); }
             catch (Exception ex)
             {
                 Debug.LogWarning($"{LogPrefix} user-data-dir 생성 실패({ex.Message}) — 기본 프로필로 진행");
             }
 
-            // --app=url : 탭/주소창/메뉴 없는 PWA 앱 모드 (브라우저 자체의 chrome 제거)
-            // --user-data-dir : 호스트 사용자 일반 프로필과 격리
-            // --no-first-run : 첫 실행 다이얼로그 억제
-            // --no-default-browser-check : 기본 브라우저 변경 프롬프트 억제
-            // --window-position/size : 일단 화면 어딘가에 띄움 (직후 SetWindowPos가 덮어씀)
+            // --app=url : 탭/주소창/메뉴 없는 PWA 앱 모드
+            // --user-data-dir : 호스트 일반 프로필과 격리
+            // --window-position : 오프스크린 spawn 후 reparent 완료되면 실제 위치로 이동 → splash flash 방지
             var args =
                 $"--app={url} " +
                 $"--user-data-dir=\"{UserDataDirRoot}\" " +
                 "--no-first-run --no-default-browser-check --disable-popup-blocking " +
-                "--window-position=0,0 --window-size=800,600";
+                $"--window-position={OffscreenX},{OffscreenY} --window-size=800,600";
 
             var psi = new ProcessStartInfo
             {
@@ -179,25 +215,23 @@ namespace EditorBrowser
             _visible = false;
             _lastX = _lastY = _lastW = _lastH = int.MinValue;
 
-            Debug.Log($"{LogPrefix} 브라우저 시작 kind={info.Kind} pid={_process?.Id} url={url}");
+            Debug.Log($"{LogPrefix} 브라우저 시작 kind={info.Kind} pid={_process?.Id} url={url} (오프스크린 spawn)");
         }
 
         /// <summary>
-        /// MainWindowHandle이 잡혔으면 WS_CHILD reparent + 스타일 strip 수행.
-        /// 아직 안 잡혔으면 false 반환(다음 틱 재시도).
+        /// PID로 EnumWindows + 클래스명 매칭으로 진짜 앱 윈도우를 찾는다.
+        /// Process.MainWindowHandle은 Chrome --app= 모드에서 splash/dummy 윈도우를 잡을 수 있어 사용 안 함.
         /// </summary>
         private bool TryAttach()
         {
             if (_process == null || _process.HasExited) return false;
 
-            try { _process.Refresh(); } catch { return false; }
-            var h = _process.MainWindowHandle;
-            if (h == IntPtr.Zero || !Win32.IsWindow(h)) return false;
+            var found = FindChromeAppWindowByPid((uint)_process.Id);
+            if (found == IntPtr.Zero) return false;
 
-            // 부모 결정 — Unity 메인 HWND. 이 핸들은 도메인 리로드 후에도 유지됨.
+            // 부모 결정 — Unity 메인 HWND
             if (_unityHwnd == IntPtr.Zero || !Win32.IsWindow(_unityHwnd))
                 _unityHwnd = Process.GetCurrentProcess().MainWindowHandle;
-
             if (_unityHwnd == IntPtr.Zero)
             {
                 Debug.LogWarning($"{LogPrefix} Unity 메인 HWND를 얻지 못함 — 다음 틱 재시도");
@@ -205,33 +239,74 @@ namespace EditorBrowser
             }
 
             // 1) 캡션·테두리 등 데코레이션 strip + WS_CHILD 부여
-            var style = (uint)Win32.GetWindowLongPtr(h, Win32.GWL_STYLE).ToInt64();
+            var style = (uint)Win32.GetWindowLongPtr(found, Win32.GWL_STYLE).ToInt64();
             const uint Strip = Win32.WS_OVERLAPPED | Win32.WS_CAPTION | Win32.WS_THICKFRAME
                                | Win32.WS_SYSMENU | Win32.WS_MINIMIZEBOX | Win32.WS_MAXIMIZEBOX
                                | Win32.WS_BORDER | Win32.WS_DLGFRAME | Win32.WS_POPUP;
             style &= ~Strip;
-            style |= Win32.WS_CHILD | Win32.WS_CLIPSIBLINGS | Win32.WS_CLIPCHILDREN;
-            Win32.SetWindowLongPtr(h, Win32.GWL_STYLE, new IntPtr(unchecked((int)style)));
+            style |= Win32.WS_CHILD | Win32.WS_CLIPSIBLINGS;
+            Win32.SetWindowLongPtr(found, Win32.GWL_STYLE, new IntPtr(unchecked((int)style)));
 
-            // 2) 작업 표시줄에서 사라지도록 EX 스타일 조정 (TOOLWINDOW로 전환, APPWINDOW 제거)
-            var ex = (uint)Win32.GetWindowLongPtr(h, Win32.GWL_EXSTYLE).ToInt64();
+            // 2) 작업 표시줄에서 제거 (TOOLWINDOW)
+            var ex = (uint)Win32.GetWindowLongPtr(found, Win32.GWL_EXSTYLE).ToInt64();
             ex &= ~Win32.WS_EX_APPWINDOW;
             ex |= Win32.WS_EX_TOOLWINDOW;
-            Win32.SetWindowLongPtr(h, Win32.GWL_EXSTYLE, new IntPtr(unchecked((int)ex)));
+            Win32.SetWindowLongPtr(found, Win32.GWL_EXSTYLE, new IntPtr(unchecked((int)ex)));
 
             // 3) reparent
-            Win32.SetParent(h, _unityHwnd);
+            Win32.SetParent(found, _unityHwnd);
 
-            // 4) 스타일 변경을 적용시키기 위한 SetWindowPos with SWP_FRAMECHANGED
-            Win32.SetWindowPos(h, IntPtr.Zero, 0, 0, 0, 0,
-                Win32.SWP_NOMOVE | Win32.SWP_NOSIZE | Win32.SWP_NOZORDER
-                | Win32.SWP_NOACTIVATE | Win32.SWP_FRAMECHANGED);
+            // 4) 스타일 변경 적용 + z-order 최상단
+            Win32.SetWindowPos(found, Win32.HWND_TOP, 0, 0, 0, 0,
+                Win32.SWP_NOMOVE | Win32.SWP_NOSIZE | Win32.SWP_NOACTIVATE
+                | Win32.SWP_FRAMECHANGED);
 
-            _browserHwnd = h;
+            _browserHwnd = found;
             _attached = true;
 
-            Debug.Log($"{LogPrefix} HWND 부착 완료 hwnd=0x{h.ToInt64():X} parent=0x{_unityHwnd.ToInt64():X}");
+            Debug.Log($"{LogPrefix} HWND 부착 완료 hwnd=0x{found.ToInt64():X} parent=0x{_unityHwnd.ToInt64():X}");
             return true;
+        }
+
+        /// <summary>
+        /// 특정 PID 트리에 속한 Chrome_WidgetWin_* 클래스의 top-level 윈도우 중
+        /// 가장 큰 가시(또는 가시 후보) 윈도우를 반환. 없으면 IntPtr.Zero.
+        /// </summary>
+        private static IntPtr FindChromeAppWindowByPid(uint pid)
+        {
+            IntPtr best = IntPtr.Zero;
+            int bestArea = 0;
+            var classBuf = new StringBuilder(64);
+
+            Win32.EnumWindows((h, _) =>
+            {
+                Win32.GetWindowThreadProcessId(h, out var wpid);
+                if (wpid != pid) return true; // 다른 프로세스
+
+                // top-level만 (이 시점엔 아직 reparent 전이라 GetParent가 0이어야 함)
+                if (Win32.GetWindowLongPtr(h, Win32.GWL_STYLE).ToInt64() is var rawStyle
+                    && (((uint)rawStyle) & Win32.WS_CHILD) != 0)
+                    return true; // 이미 child인 윈도우는 우리가 이전에 처리한 것일 수 있음 — 건너뜀
+
+                classBuf.Length = 0;
+                Win32.GetClassName(h, classBuf, classBuf.Capacity);
+                if (classBuf.Length == 0) return true;
+                var cn = classBuf.ToString();
+                if (!cn.StartsWith(ChromeWindowClassPrefix, StringComparison.Ordinal)) return true;
+
+                if (!Win32.GetWindowRect(h, out var rc)) return true;
+                var area = (rc.Right - rc.Left) * (rc.Bottom - rc.Top);
+                if (area < 200 * 100) return true; // splash/popup 정도는 무시
+
+                if (area > bestArea)
+                {
+                    bestArea = area;
+                    best = h;
+                }
+                return true;
+            }, IntPtr.Zero);
+
+            return best;
         }
 
         private void DisposeProcess()
