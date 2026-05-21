@@ -1,15 +1,1 @@
-{
-    "name": "EditorBrowser.Editor",
-    "rootNamespace": "EditorBrowser",
-    "references": [],
-    "includePlatforms": [
-        "Editor"
-    ],
-    "excludePlatforms": [],
-    "overrideReferences": false,
-    "precompiledReferences": [],
-    "autoReferenced": true,
-    "defineConstraints": [],
-    "versionDefines": [],
-    "noEngineReferences": false
-}
+﻿{    "name": "EditorBrowser.Editor",    "rootNamespace": "EditorBrowser",    "references": [],    "includePlatforms": [        "Editor"    ],    "excludePlatforms": [],    "overrideReferences": false,    "precompiledReferences": [],    "autoReferenced": true,    "defineConstraints": [],    "versionDefines": [],    "noEngineReferences": false}
