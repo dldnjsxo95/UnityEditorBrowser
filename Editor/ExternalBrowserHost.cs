@@ -361,10 +361,12 @@ namespace EditorBrowser
             ex |= Win32.WS_EX_TOOLWINDOW;
             Win32.SetWindowLongPtr(found, Win32.GWL_EXSTYLE, new IntPtr(unchecked((int)ex)));
 
-            // 4) 스타일 변경 적용 (위치/사이즈는 다음 sync에서 설정).
-            // HWND_TOPMOST 안 씀 — 사용자 요구: Unity 활성 시에도 다른 프로그램에 가려져야.
-            // Chrome 은 일반 NOTOPMOST top-level. 같은 dock 안 다른 Tab 선택 시 BrowserWindow 가
-            // body 비활성 감지하여 Chrome Hide.
+            // 4) **owner-popup 관계 설정** — Chrome 을 Unity main 의 owned popup 으로.
+            // 효과: Unity 활성 시 Chrome 함께 위로 (Tab 영역에 보임), 다른 프로그램 활성 시
+            // Unity 와 Chrome 둘 다 뒤로 (다른 프로그램에 자연스럽게 가려짐). HWND_TOPMOST 불필요.
+            Win32.SetWindowLongPtr(found, Win32.GWLP_HWNDPARENT, _unityHwnd);
+
+            // 5) 스타일 변경 적용 + z-order top (Unity owned popup 그룹 안에서 최상단)
             Win32.SetWindowPos(found, Win32.HWND_TOP, 0, 0, 0, 0,
                 Win32.SWP_NOMOVE | Win32.SWP_NOSIZE | Win32.SWP_NOACTIVATE
                 | Win32.SWP_FRAMECHANGED);
