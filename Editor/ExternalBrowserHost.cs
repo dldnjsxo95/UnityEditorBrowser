@@ -152,21 +152,23 @@ namespace EditorBrowser
 
             _lastX = absX; _lastY = absY; _lastW = absW; _lastH = absH;
 
-            // === PWA fake titlebar cut-out 전략 ===
-            // Chrome --app= 윈도우는 client area 상단 FakeTitlebarHeight 픽셀이 fake
-            // titlebar(드래그 핸들)로 그려지고 그 아래가 페이지 컨텐츠. 페이지를 body 영역에
-            // 정확히 맞추려면 윈도우 사이즈를 body 보다 FakeTitlebarHeight 만큼 키운 후
-            // SetWindowRgn 으로 위쪽 FakeTitlebarHeight 영역을 visible 에서 제외해야 함.
+            // === Chrome window 영역을 body 와 정확히 일치 (확장/cut-out 없음) ===
+            // 시도했던 두 가지 cut-out 전략:
+            //   (1) 아래로 확장 + 위 cut-out → Chrome 페이지가 body 아래로 32px 튀어나와
+            //       statusBar 가림.
+            //   (2) 위로 확장 + 위 cut-out → cut-out 영역(=toolbar 영역) 이 transparent 여야
+            //       toolbar 가 보여야 하나, Chrome owner-popup 의 OS-level 점유 + Unity D3D
+            //       swap chain + DWM 합성 관계로 실제로는 toolbar 가 시각적으로 가려짐.
+            // 두 케이스 모두 사용자가 "한쪽이 가려짐" 으로 인식.
             //
-            // **확장 방향**: 위로 확장 (winY = absY - FakeTitlebarHeight). 아래로 확장하면
-            // Chrome 페이지가 body 아래로 튀어나와 EditorWindow 하단 statusBar 를 덮어
-            // "Ready" / "Loading: …" 등의 status 라벨이 안 보임. 위로 확장하면 region
-            // cut-out 후 visible 영역이 body 와 정확히 일치 → statusBar 보존, body 상단의
-            // placeholder 도 즉시 가려짐. (검증 2026-05-21)
+            // **현재 전략**: window 영역을 body 와 정확 일치 시키고 SetWindowRgn 호출 안 함.
+            // Chrome --app= 모드의 PWA mini titlebar (client area 상단 ~32px) 가 body 상단
+            // 에 그대로 보임 — 그러나 회색의 작은 titlebar 라 페이지의 일부처럼 자연스럽고,
+            // toolbar / statusBar 둘 다 보존됨. (검증 2026-05-21)
             var winX = absX;
-            var winY = absY - FakeTitlebarHeight;
+            var winY = absY;
             var winW = absW;
-            var winH = absH + FakeTitlebarHeight;
+            var winH = absH;
 
             // background enforce thread 가 읽을 마지막 valid 위치 저장.
             s_enforceX = winX; s_enforceY = winY; s_enforceW = winW; s_enforceH = winH;
@@ -178,11 +180,6 @@ namespace EditorBrowser
                 _browserHwnd, Win32.HWND_TOP,
                 winX, winY, winW, winH,
                 Win32.SWP_NOACTIVATE | Win32.SWP_FRAMECHANGED);
-
-            // 윈도우 region: 위쪽 FakeTitlebarHeight 영역을 제외한 영역만 visible (fake titlebar cut-out)
-            var rgn = Win32.CreateRectRgn(0, FakeTitlebarHeight, winW, winH);
-            Win32.SetWindowRgn(_browserHwnd, rgn, true);
-            // rgn 소유권은 SetWindowRgn 호출 후 OS로 이전 — 직접 DeleteObject 호출 금지
 
             // Chrome에 WM_SIZE 명시 전송
             var sizeLParam = new IntPtr(((winH & 0xFFFF) << 16) | (winW & 0xFFFF));
@@ -278,12 +275,12 @@ namespace EditorBrowser
             //   - --disable-gpu, --disable-gpu-compositing
             //   - --disable-features=CalculateNativeWinOcclusion
             //   - --disable-backgrounding-occluded-windows, --disable-renderer-backgrounding
-            // SyncBoundsAbsoluteScreen 과 동일한 위로-확장 전략. spawn 시점부터 cut-out 후
-            // visible 영역이 body 와 정확히 일치하도록 spawnY = bodyY - FakeTitlebarHeight.
+            // SyncBoundsAbsoluteScreen 과 동일 — window 영역 = body 영역. cut-out 없음.
+            // PWA mini titlebar 가 body 상단에 보이지만 toolbar / statusBar 가 가려지지 않음.
             var spawnX = bodyX;
-            var spawnY = bodyY - FakeTitlebarHeight;
+            var spawnY = bodyY;
             var spawnW = Math.Max(bodyW, 200);
-            var spawnH = Math.Max(bodyH + FakeTitlebarHeight, 200);
+            var spawnH = Math.Max(bodyH, 200);
             var args =
                 $"--app={url} " +
                 $"--user-data-dir=\"{UserDataDirRoot}\" " +
