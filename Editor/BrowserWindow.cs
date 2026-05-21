@@ -331,6 +331,8 @@ namespace EditorBrowser
             else _pendingInitialUrl = url; // layout 안 됐으면 다음 update 에서 spawn
         }
 
+        private Rect _lastValidWinPos;
+
         private (int x, int y, int w, int h, bool valid) ComputeBodyAbsRect()
         {
             if (_body == null) return (0, 0, 0, 0, false);
@@ -338,8 +340,34 @@ namespace EditorBrowser
             if (float.IsNaN(bound.width) || float.IsNaN(bound.height)
                 || bound.width <= 1f || bound.height <= 1f)
                 return (0, 0, 0, 0, false);
-            var scale = EditorGUIUtility.pixelsPerPoint;
+
             var winPos = position;
+
+            // **의심 position 거부**: Tab drag/dock 변경 직후 일시적으로 (0, 200) 같은 default-ish
+            // 좌표가 반환되어 Chrome 이 좌측 상단으로 점프하는 현상 회피. 사용자가 본 증상의
+            // 진짜 원인은 drag 종료 시점에 EditorWindow.position 이 일시 비정상.
+            //
+            // - winPos.x < 50 또는 winPos.y < 50 → 화면 좌측 상단 default. 의도적 배치가 아니라고 가정.
+            // - winPos.width < 100 또는 height < 100 → 사실상 사용 불가 사이즈.
+            // 의심값이면 마지막 유효 위치 유지 (Chrome 가만히 두기).
+            if (winPos.x < 50f || winPos.y < 50f || winPos.width < 100f || winPos.height < 100f)
+            {
+                if (_lastValidWinPos.width > 100f && _lastValidWinPos.height > 100f)
+                {
+                    Debug.LogWarning($"{LogPrefix} 의심 winPos=({winPos.x:F1},{winPos.y:F1}) 거부 → 마지막 유효 위치 유지 ({_lastValidWinPos.x:F1},{_lastValidWinPos.y:F1})");
+                    winPos = _lastValidWinPos;
+                }
+                else
+                {
+                    return (0, 0, 0, 0, false); // 첫 호출이고 의심값이면 sync 보류
+                }
+            }
+            else
+            {
+                _lastValidWinPos = winPos;
+            }
+
+            var scale = EditorGUIUtility.pixelsPerPoint;
             return (
                 Mathf.RoundToInt((winPos.x + bound.x) * scale),
                 Mathf.RoundToInt((winPos.y + bound.y) * scale),
