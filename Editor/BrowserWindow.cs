@@ -412,7 +412,16 @@ namespace EditorBrowser
             _urlField.style.flexGrow = 1f;
             _urlField.style.marginLeft = 4f;
             _urlField.style.marginRight = 4f;
-            _urlField.RegisterCallback<KeyDownEvent>(OnUrlFieldKeyDown);
+            // **이중 등록 + TrickleDown**:
+            // - KeyDownEvent (TrickleDown=capture): TextField 내부 텍스트 에디터가 Enter
+            //   를 소비/IME commit 으로 묻기 전에 가로챔. bubble 단계 등록 시 첫 Enter 가
+            //   "한글 조합 확정" 으로 처리되어 우리 callback 에 도달 안 함 → 두 번째 Enter
+            //   필요 했던 원인.
+            // - NavigationSubmitEvent: UI Toolkit 의 abstract submit 신호. IME / 입력기
+            //   상태와 무관하게 사용자 의도된 submit 시 발생. KeyDownEvent 가 못 잡는
+            //   경우의 안전망.
+            _urlField.RegisterCallback<KeyDownEvent>(OnUrlFieldKeyDown, TrickleDown.TrickleDown);
+            _urlField.RegisterCallback<NavigationSubmitEvent>(OnUrlFieldSubmit);
 
             toolbar.Add(_backBtn);
             toolbar.Add(_forwardBtn);
@@ -484,14 +493,44 @@ namespace EditorBrowser
             _winEventTickCount = 0;
         }
 
+        private double _lastSubmitTime;
+
         private void OnUrlFieldKeyDown(KeyDownEvent evt)
         {
-            if (evt.keyCode != KeyCode.Return && evt.keyCode != KeyCode.KeypadEnter)
-                return;
+            // keyCode 외에 character 도 체크 — 일부 환경 / IME 에서 keyCode 가 None 으로
+            // 오고 character 만 '\r' / '\n' 로 들어오는 경우 대응.
+            bool isEnter = evt.keyCode == KeyCode.Return
+                        || evt.keyCode == KeyCode.KeypadEnter
+                        || evt.character == '\n'
+                        || evt.character == '\r';
+            if (!isEnter) return;
 
-            var resolved = UrlResolver.Resolve(_urlField.value);
-            Navigate(resolved, pushHistory: true);
+            SubmitUrl();
+            // PreventDefault: TextField 내부 텍스트 에디터가 Enter 로 newline 삽입 /
+            // selection 처리 같은 부작용 일으키지 않게 차단.
             evt.StopPropagation();
+            evt.PreventDefault();
+        }
+
+        private void OnUrlFieldSubmit(NavigationSubmitEvent evt)
+        {
+            SubmitUrl();
+            evt.StopPropagation();
+        }
+
+        private void SubmitUrl()
+        {
+            // KeyDownEvent + NavigationSubmitEvent 가 동시에 발생할 수 있어 짧은 시간 내
+            // 중복 호출 차단 (300ms — 사용자가 의도적으로 두 번 빠르게 누르는 경우는 드묾).
+            var now = EditorApplication.timeSinceStartup;
+            if (now - _lastSubmitTime < 0.3) return;
+            _lastSubmitTime = now;
+
+            var raw = _urlField?.value;
+            if (string.IsNullOrWhiteSpace(raw)) return;
+            var resolved = UrlResolver.Resolve(raw);
+            if (string.IsNullOrEmpty(resolved)) return;
+            Navigate(resolved, pushHistory: true);
         }
 
         private void OnBackClicked()
