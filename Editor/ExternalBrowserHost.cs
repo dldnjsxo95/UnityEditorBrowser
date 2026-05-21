@@ -133,7 +133,9 @@ namespace EditorBrowser
             // no-op 이므로 paint 사이클을 깨뜨리지 않는다.
             if (_visible && absX == _lastX && absY == _lastY && absW == _lastW && absH == _lastH)
             {
-                Win32.SetWindowPos(_browserHwnd, Win32.HWND_TOPMOST, 0, 0, 0, 0,
+                // z-order TOP 유지만 (WS_EX_TOPMOST 비트는 BrowserWindow 가 foreground 추적으로 관리).
+                // HWND_TOPMOST 매번 호출하면 Unity 비활성 시에도 강제 topmost 가 되어 다른 프로그램을 가린다.
+                Win32.SetWindowPos(_browserHwnd, Win32.HWND_TOP, 0, 0, 0, 0,
                     Win32.SWP_NOMOVE | Win32.SWP_NOSIZE | Win32.SWP_NOACTIVATE);
                 return;
             }
@@ -150,9 +152,10 @@ namespace EditorBrowser
             var winW = absW;
             var winH = absH + FakeTitlebarHeight;
 
-            // HWND_TOPMOST + SWP_FRAMECHANGED — 위치/사이즈 변경 + topmost 유지
+            // HWND_TOP + SWP_FRAMECHANGED — 위치/사이즈 변경. WS_EX_TOPMOST 비트는 BrowserWindow 의
+            // foreground 추적이 별도로 관리(Unity active 시 TOPMOST, inactive 시 NOTOPMOST).
             Win32.SetWindowPos(
-                _browserHwnd, Win32.HWND_TOPMOST,
+                _browserHwnd, Win32.HWND_TOP,
                 winX, winY, winW, winH,
                 Win32.SWP_NOACTIVATE | Win32.SWP_FRAMECHANGED);
 

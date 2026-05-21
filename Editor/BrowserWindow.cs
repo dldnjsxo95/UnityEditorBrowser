@@ -397,20 +397,23 @@ namespace EditorBrowser
         /// 매 에디터 틱마다 body 영역의 스크린 픽셀 RECT를 계산해 외부 브라우저 HWND를
         /// 동기화한다. body가 안 보이는 상태(0 사이즈, 탭 비활성 등)면 hide.
         /// </summary>
+        private bool _wasUnityForeground = true;
+
         private void OnEditorUpdate()
         {
             if (_host == null || _body == null) return;
 
+            // Unity(또는 Chrome 자체)가 foreground 일 때만 TOPMOST 유지. 다른 프로그램이
+            // foreground 면 NOTOPMOST 로 toggle 하여 사용자 다른 작업 시 Chrome 이 가리지 않게.
+            UpdateTopmostByForeground();
+
             var (absX, absY, absW, absH, valid) = ComputeBodyAbsRect();
             if (!valid)
             {
-                // 의심 winPos 거부 시 Chrome 을 잠시 숨김 → drag/resize 종료 동안 사용자가
-                // 잘못된 위치의 Chrome 을 볼 일 없음. valid winPos 복귀 시 새 위치로 즉시 show.
                 _host.Hide();
                 return;
             }
 
-            // 초기 spawn 대기 중이면 body 위치 확보된 지금 spawn
             if (_pendingInitialUrl != null)
             {
                 var url = _pendingInitialUrl;
@@ -420,6 +423,36 @@ namespace EditorBrowser
             }
 
             _host.SyncBoundsAbsoluteScreen(absX, absY, absW, absH);
+        }
+
+        private void UpdateTopmostByForeground()
+        {
+            var bh = _host?.BrowserHwnd ?? IntPtr.Zero;
+            if (bh == IntPtr.Zero) return;
+
+            var fg = EditorBrowser.Native.Win32.GetForegroundWindow();
+            EditorBrowser.Native.Win32.GetWindowThreadProcessId(fg, out var fgPid);
+
+            var unityPid = (uint)System.Diagnostics.Process.GetCurrentProcess().Id;
+            var chromePid = (uint)(_host.ProcessId);
+            bool isOurContext = (fgPid == unityPid) || (chromePid > 0 && fgPid == chromePid);
+
+            // 상태 변화 시점에만 z-order toggle — paint cycle 영향 최소화
+            if (isOurContext == _wasUnityForeground) return;
+            _wasUnityForeground = isOurContext;
+
+            var hWndInsertAfter = isOurContext
+                ? EditorBrowser.Native.Win32.HWND_TOPMOST
+                : EditorBrowser.Native.Win32.HWND_NOTOPMOST;
+
+            EditorBrowser.Native.Win32.SetWindowPos(
+                bh, hWndInsertAfter, 0, 0, 0, 0,
+                EditorBrowser.Native.Win32.SWP_NOMOVE
+                | EditorBrowser.Native.Win32.SWP_NOSIZE
+                | EditorBrowser.Native.Win32.SWP_NOACTIVATE);
+
+            Debug.Log($"{LogPrefix} Foreground={(isOurContext ? "Unity/Chrome" : "Other")} → " +
+                      $"{(isOurContext ? "TOPMOST" : "NOTOPMOST")}");
         }
     }
 }
