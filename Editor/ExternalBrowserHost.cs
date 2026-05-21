@@ -153,8 +153,18 @@ namespace EditorBrowser
             _lastX = absX; _lastY = absY; _lastW = absW; _lastH = absH;
 
             // === PWA fake titlebar cut-out 전략 ===
+            // Chrome --app= 윈도우는 client area 상단 FakeTitlebarHeight 픽셀이 fake
+            // titlebar(드래그 핸들)로 그려지고 그 아래가 페이지 컨텐츠. 페이지를 body 영역에
+            // 정확히 맞추려면 윈도우 사이즈를 body 보다 FakeTitlebarHeight 만큼 키운 후
+            // SetWindowRgn 으로 위쪽 FakeTitlebarHeight 영역을 visible 에서 제외해야 함.
+            //
+            // **확장 방향**: 위로 확장 (winY = absY - FakeTitlebarHeight). 아래로 확장하면
+            // Chrome 페이지가 body 아래로 튀어나와 EditorWindow 하단 statusBar 를 덮어
+            // "Ready" / "Loading: …" 등의 status 라벨이 안 보임. 위로 확장하면 region
+            // cut-out 후 visible 영역이 body 와 정확히 일치 → statusBar 보존, body 상단의
+            // placeholder 도 즉시 가려짐. (검증 2026-05-21)
             var winX = absX;
-            var winY = absY;
+            var winY = absY - FakeTitlebarHeight;
             var winW = absW;
             var winH = absH + FakeTitlebarHeight;
 
@@ -268,6 +278,10 @@ namespace EditorBrowser
             //   - --disable-gpu, --disable-gpu-compositing
             //   - --disable-features=CalculateNativeWinOcclusion
             //   - --disable-backgrounding-occluded-windows, --disable-renderer-backgrounding
+            // SyncBoundsAbsoluteScreen 과 동일한 위로-확장 전략. spawn 시점부터 cut-out 후
+            // visible 영역이 body 와 정확히 일치하도록 spawnY = bodyY - FakeTitlebarHeight.
+            var spawnX = bodyX;
+            var spawnY = bodyY - FakeTitlebarHeight;
             var spawnW = Math.Max(bodyW, 200);
             var spawnH = Math.Max(bodyH + FakeTitlebarHeight, 200);
             var args =
@@ -275,7 +289,7 @@ namespace EditorBrowser
                 $"--user-data-dir=\"{UserDataDirRoot}\" " +
                 "--no-first-run --no-default-browser-check --disable-popup-blocking " +
                 "--remote-debugging-port=9222 " +
-                $"--window-position={bodyX},{bodyY} --window-size={spawnW},{spawnH}";
+                $"--window-position={spawnX},{spawnY} --window-size={spawnW},{spawnH}";
 
             // **핵심**: Unity 에디터는 자식 프로세스들을 Job Object 에 묶는다(2026-05-21 IsProcessInJob 검증).
             // Job Object 의 limit 가 Chrome paint 사이클을 차단해 흰 화면 유발. CreateProcess 의
