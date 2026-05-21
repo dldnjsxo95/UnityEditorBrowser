@@ -63,6 +63,16 @@ namespace EditorBrowser
 
         private int _lastX, _lastY, _lastW, _lastH;
 
+        // === Background thread enforce — drag modal loop 우회 ===
+        // 메인 thread 가 차단되어도 background watchdog 가 매 20ms 이 위치 강제 유지.
+        // Unity dock system 또는 OS 가 Chrome HWND 옮겨도 즉시 SetWindowPos 복귀.
+        // SyncBoundsAbsoluteScreen 의 winX/Y/W/H (FakeTitlebarHeight 적용된 실제 OS rect).
+        public static volatile int s_enforceX;
+        public static volatile int s_enforceY;
+        public static volatile int s_enforceW;
+        public static volatile int s_enforceH;
+        public static volatile bool s_enforceEnabled;
+
         // z-order 강제 갱신 빈도 제한 — 매 sync(16ms) 마다 호출하면 Chrome paint 사이클이 망가져
         // 페이지가 안 그려진다. 500ms 마다 한 번씩만 강제.
         private DateTime _lastZOrderForceUtc = DateTime.MinValue;
@@ -143,14 +153,14 @@ namespace EditorBrowser
             _lastX = absX; _lastY = absY; _lastW = absW; _lastH = absH;
 
             // === PWA fake titlebar cut-out 전략 ===
-            // Chrome HWND 의 좌상단을 EditorWindow body 좌상단과 일치시키고, 사이즈를 아래로
-            // FakeTitlebarHeight 만큼 확장. SetWindowRgn 으로 윗 FakeTitlebarHeight 영역을 cut-out
-            // 하면 fake titlebar 는 안 보이고, 페이지 컨텐츠는 body 영역의 아래쪽부터 표시된다.
-            // EditorWindow toolbar 는 body 위에 있으므로 절대 침범 안 함.
             var winX = absX;
             var winY = absY;
             var winW = absW;
             var winH = absH + FakeTitlebarHeight;
+
+            // background enforce thread 가 읽을 마지막 valid 위치 저장.
+            s_enforceX = winX; s_enforceY = winY; s_enforceW = winW; s_enforceH = winH;
+            s_enforceEnabled = true;
 
             // HWND_TOP + SWP_FRAMECHANGED — 위치/사이즈 변경. WS_EX_TOPMOST 비트는 BrowserWindow 의
             // foreground 추적이 별도로 관리(Unity active 시 TOPMOST, inactive 시 NOTOPMOST).
@@ -185,6 +195,8 @@ namespace EditorBrowser
             if (!IsAlive || !_visible || _browserHwnd == IntPtr.Zero) return;
             Win32.ShowWindow(_browserHwnd, Win32.SW_HIDE);
             _visible = false;
+            // enforce 중지 — Hide 동안 background thread 가 강제 sync 시 다시 보이게 함
+            s_enforceEnabled = false;
         }
 
         public void Dispose()
@@ -305,8 +317,6 @@ namespace EditorBrowser
             _visible = false;
             _processStartUtc = DateTime.UtcNow;
             _lastX = _lastY = _lastW = _lastH = int.MinValue;
-
-            Debug.Log($"{LogPrefix} 브라우저 시작 kind={info.Kind} url={url} spawn=({bodyX},{bodyY}) {spawnW}x{spawnH}");
         }
 
         /// <summary>
@@ -326,7 +336,6 @@ namespace EditorBrowser
             {
                 _chromePid = FindChromePidByProfilePath();
                 if (_chromePid <= 0) return false;
-                Debug.Log($"{LogPrefix} 진짜 Chrome PID 찾음: {_chromePid}");
             }
 
             var found = FindChromeAppWindowByPid((uint)_chromePid);
@@ -374,8 +383,6 @@ namespace EditorBrowser
             _browserHwnd = found;
             _attached = true;
             _visible = false; // 다음 SyncBoundsAbsoluteScreen에서 SHOW
-
-            Debug.Log($"{LogPrefix} HWND 부착 완료 hwnd=0x{found.ToInt64():X} (HIDE 상태, 다음 sync에서 위치 적용 + SHOW)");
             return true;
         }
 
@@ -435,7 +442,6 @@ namespace EditorBrowser
             IntPtr best = IntPtr.Zero;
             long bestArea = -1;
             var classBuf = new StringBuilder(64);
-            int candidateCount = 0;
 
             Win32.EnumWindows((h, _) =>
             {
@@ -457,9 +463,6 @@ namespace EditorBrowser
                 bool isChild = (rawStyle & Win32.WS_CHILD) != 0;
                 bool vis = Win32.IsWindowVisible(h);
 
-                // 진단 — 모든 Chrome_WidgetWin_* 후보 출력
-                Debug.Log($"{LogPrefix} CAND #{candidateCount++} hwnd=0x{h.ToInt64():X} cls='{cn}' size={w}x{hpx} rect=({rc.Left},{rc.Top}) vis={vis} hasCAPTION={hasCaption} isCHILD={isChild} style=0x{rawStyle:X}");
-
                 if (isChild) return true;
                 if (!hasCaption) return true;
                 if (!vis) return true; // **vis=False 컨테이너 윈도우(_0 1920x1023 등) 거부**
@@ -477,7 +480,6 @@ namespace EditorBrowser
                 return true;
             }, IntPtr.Zero);
 
-            Debug.Log($"{LogPrefix} FindChromeAppWindowByPid pid={pid} → 0x{best.ToInt64():X} (area={bestArea}, candidates={candidateCount})");
             return best;
         }
 

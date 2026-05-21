@@ -145,6 +145,27 @@ namespace EditorBrowser.Native
         [return: MarshalAs(UnmanagedType.Bool)]
         public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
 
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool GetClientRect(IntPtr hWnd, out RECT lpRect);
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool ClientToScreen(IntPtr hWnd, ref POINT lpPoint);
+
+        // ----- mouse 시뮬레이션 (진단/자동 검증 전용) -----
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool SetCursorPos(int X, int Y);
+
+        public const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
+        public const uint MOUSEEVENTF_LEFTUP   = 0x0004;
+        public const uint MOUSEEVENTF_MOVE     = 0x0001;
+        public const uint MOUSEEVENTF_ABSOLUTE = 0x8000;
+
+        [DllImport("user32.dll")]
+        public static extern void mouse_event(uint dwFlags, int dx, int dy, uint dwData, IntPtr dwExtraInfo);
+
         // ----- Z-order 상수 -----
         public static readonly IntPtr HWND_TOP       = new IntPtr(0);
         public static readonly IntPtr HWND_BOTTOM    = new IntPtr(1);
@@ -242,6 +263,11 @@ namespace EditorBrowser.Native
         public const uint EVENT_SYSTEM_FOREGROUND     = 0x0003;
         public const uint WINEVENT_OUTOFCONTEXT       = 0x0000;
         public const uint WINEVENT_SKIPOWNPROCESS     = 0x0002;
+
+        // OBJID — WinEvent idObject 값. 0 = OBJID_WINDOW (윈도우 자체).
+        // 음수 값(OBJID_CLIENT=-4, OBJID_VSCROLL=-5 등)은 윈도우 내부 컨트롤의 변화로,
+        // 윈도우 위치/사이즈 추종 목적에는 노이즈.
+        public const int OBJID_WINDOW = 0;
 
         public delegate void WinEventDelegate(
             IntPtr hWinEventHook, uint eventType, IntPtr hwnd,

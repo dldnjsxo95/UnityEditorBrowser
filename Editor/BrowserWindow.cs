@@ -95,6 +95,41 @@ namespace EditorBrowser
             EditorApplication.update += tick;
         }
 
+        // sync 호출 빈도 진단 — 실시간 추종 안 될 때 원인이 호출 빈도인지 RECT 계산인지
+        // 분리해서 보기 위한 토글. 켜면 1초마다 update/winEvent tick + 마지막 absRECT dump.
+        [MenuItem("Window/Editor Browser Toggle Sync Trace", priority = 2016)]
+        public static void ToggleSyncTrace()
+        {
+            s_traceEnabled = !s_traceEnabled;
+            Debug.Log($"{LogPrefix} Sync Trace = {(s_traceEnabled ? "ON" : "OFF")}");
+        }
+
+        // 매 호출 ring buffer dump — drag 후 클릭하면 최근 300 호출의 winPos/bound/absRect/state
+        // 시퀀스를 console 에 한 줄씩 출력. 점프 발생 frame 정확히 식별 가능.
+        [MenuItem("Window/Editor Browser Dump Sync Ring", priority = 2017)]
+        public static void DumpSyncRing()
+        {
+            Debug.Log(BuildSyncRingDump());
+        }
+
+        // mcp 자동 검증용 — DumpSyncRing 의 string 반환 버전.
+        public static string BuildSyncRingDump()
+        {
+            int total = s_syncRing.Length;
+            int n = Math.Min(s_syncRingIdx, total);
+            int start = (s_syncRingIdx - n + total) % total;
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine($"{LogPrefix} === Sync Ring ({n} entries, idx={s_syncRingIdx}) ===");
+            for (int i = 0; i < n; i++)
+            {
+                var e = s_syncRing[(start + i) % total];
+                sb.AppendLine($"  [{e.time:F3}] winPos=({e.winPos.x:F0},{e.winPos.y:F0}) {e.winPos.width:F0}x{e.winPos.height:F0} " +
+                              $"bound=({e.bound.x:F0},{e.bound.y:F0}) {e.bound.width:F0}x{e.bound.height:F0} " +
+                              $"abs=({e.absX},{e.absY}) {e.absW}x{e.absH} state={e.state}");
+            }
+            return sb.ToString();
+        }
+
         // 별도 경로로 분리 — Window/Editor Browser (leaf) 와 Window/Editor Browser/<sub> 가 같은 path에
         // 동시 존재하면 Unity 메뉴 트리가 leaf 항목을 숨길 수 있음.
         [MenuItem("Window/Editor Browser Diagnostics", priority = 2012)]
@@ -120,6 +155,59 @@ namespace EditorBrowser
         private IntPtr _winEventHook = IntPtr.Zero;
         private EditorBrowser.Native.Win32.WinEventDelegate _winEventDelegate; // GC root
 
+        // 진단 — Toggle Sync Trace 메뉴로 활성화. 1초마다 호출 빈도 dump.
+        private static bool s_traceEnabled;
+        private int _updateTickCount;
+        private int _winEventTickCount;
+        private double _lastTraceDumpTime;
+
+        // ===== Reflection cache (UnityEditor internal ContainerWindow API) =====
+        // EditorWindow.position 은 dock system 의 frame timing race로 자주 false transient
+        // (0,26) 값을 반환. Internal_GetTopleftScreenPosition() 은 항상 OS-level screen 좌표
+        // 를 정확히 반환하므로 그것을 사용. 검증: 2026-05-21 Console docked + BrowserWindow
+        // floating 두 케이스 모두에서 EditorWindow.position 과 비교, 공식 검증 완료.
+        //
+        //   hostScreen = ContainerWindow.Internal_GetTopleftScreenPosition()
+        //              + Σ (DockArea → root) View.m_Position
+        //   bodyScreen = hostScreen + body.worldBound.position
+        private static System.Reflection.FieldInfo s_parentField;
+        private static System.Reflection.FieldInfo s_viewWinField;
+        private static System.Reflection.FieldInfo s_viewPosField;
+        private static System.Reflection.FieldInfo s_viewParentField;
+        private static System.Reflection.MethodInfo s_getTopLeftMethod;
+        private static bool s_reflectionFailed;
+
+        // 매 ComputeBodyAbsRect 호출 결과 ring buffer. drag 후 Dump Sync Ring 메뉴로 분석.
+        private struct SyncEntry
+        {
+            public double time;
+            public Rect winPos;
+            public Rect bound;
+            public int absX, absY, absW, absH;
+            public BodyState state;
+        }
+        // ring 3000 = ~50초 (60Hz). drag 종료 후에도 충분히 그 시점 entries 보존.
+        private static readonly SyncEntry[] s_syncRing = new SyncEntry[3000];
+        private static int s_syncRingIdx;
+        // freeze — 변화 감지 후 stable 3초 도달 시 자동 정지. mcp dump 가 drag 시퀀스 안전 캡처.
+        private static bool s_ringFrozen;
+        private static Rect s_changeDetectLastWinPos;
+        private static double s_freezeAt;
+
+        // === Chrome HWND watchdog — 백그라운드 thread 에서 OS 위치 추적. ===
+        // 메인 thread 가 drag modal loop 으로 차단되어도 측정 가능.
+        // 사용자가 본 "좌측 상단 점프" 가 어떤 시점에 OS-level 에서 Chrome HWND 위치 변경되는지
+        // 핀포인트. ring buffer 와 같은 auto-freeze 메커니즘.
+        private static System.Threading.Thread s_chromeWatchThread;
+        private static volatile bool s_chromeWatchStop;
+        private static readonly System.Collections.Generic.List<string> s_chromeRing = new System.Collections.Generic.List<string>();
+        private static readonly object s_chromeRingLock = new object();
+        private static volatile bool s_chromeRingFrozen;
+        private static long s_chromeFreezeAtTicks;
+        private static int s_chromeLastL, s_chromeLastT, s_chromeLastR, s_chromeLastB;
+        // BrowserHwnd 를 정적으로 노출 — watch thread 가 access
+        private static volatile IntPtr s_browserHwndForWatch;
+
         private void OnEnable()
         {
             _host = new ExternalBrowserHost();
@@ -127,10 +215,12 @@ namespace EditorBrowser
             AssemblyReloadEvents.beforeAssemblyReload += DisposeHost;
             EditorApplication.quitting += DisposeHost;
             InstallWinEventHook();
+            StartChromeWatchdog();
         }
 
         private void OnDisable()
         {
+            StopChromeWatchdog();
             UninstallWinEventHook();
             EditorApplication.update -= OnEditorUpdate;
             AssemblyReloadEvents.beforeAssemblyReload -= DisposeHost;
@@ -138,6 +228,100 @@ namespace EditorBrowser
             _syncSchedule?.Pause();
             _syncSchedule = null;
             DisposeHost();
+        }
+
+        private void StartChromeWatchdog()
+        {
+            if (s_chromeWatchThread != null && s_chromeWatchThread.IsAlive) return;
+            s_chromeWatchStop = false;
+            s_chromeWatchThread = new System.Threading.Thread(() =>
+            {
+                while (!s_chromeWatchStop)
+                {
+                    try
+                    {
+                        var hwnd = s_browserHwndForWatch;
+                        if (hwnd != IntPtr.Zero && EditorBrowser.Native.Win32.IsWindow(hwnd))
+                        {
+                            if (EditorBrowser.Native.Win32.GetWindowRect(hwnd, out var rc))
+                            {
+                                bool vis = EditorBrowser.Native.Win32.IsWindowVisible(hwnd);
+
+                                // === 강제 위치 유지 (drag modal loop 우회 핵심) ===
+                                // 메인 thread 차단 중 Unity dock system / OS 가 Chrome HWND 옮겨도
+                                // 즉시 마지막 valid 위치로 복귀. SetWindowPos 는 thread-safe.
+                                if (ExternalBrowserHost.s_enforceEnabled && vis)
+                                {
+                                    int ex = ExternalBrowserHost.s_enforceX;
+                                    int ey = ExternalBrowserHost.s_enforceY;
+                                    int ew = ExternalBrowserHost.s_enforceW;
+                                    int eh = ExternalBrowserHost.s_enforceH;
+                                    bool drifted = rc.Left != ex || rc.Top != ey
+                                                || (rc.Right - rc.Left) != ew || (rc.Bottom - rc.Top) != eh;
+                                    if (drifted)
+                                    {
+                                        EditorBrowser.Native.Win32.SetWindowPos(
+                                            hwnd, EditorBrowser.Native.Win32.HWND_TOP,
+                                            ex, ey, ew, eh,
+                                            EditorBrowser.Native.Win32.SWP_NOACTIVATE);
+                                    }
+                                }
+
+                                lock (s_chromeRingLock)
+                                {
+                                    if (!s_chromeRingFrozen)
+                                    {
+                                        s_chromeRing.Add($"{DateTime.UtcNow.Ticks} chrome=({rc.Left},{rc.Top})-({rc.Right},{rc.Bottom}) {rc.Right-rc.Left}x{rc.Bottom-rc.Top} vis={vis} enforce={(ExternalBrowserHost.s_enforceEnabled ? $"({ExternalBrowserHost.s_enforceX},{ExternalBrowserHost.s_enforceY}) {ExternalBrowserHost.s_enforceW}x{ExternalBrowserHost.s_enforceH}" : "OFF")}");
+                                        if (s_chromeRing.Count > 3000) s_chromeRing.RemoveAt(0);
+                                        bool changed = rc.Left != s_chromeLastL || rc.Top != s_chromeLastT
+                                                    || rc.Right != s_chromeLastR || rc.Bottom != s_chromeLastB;
+                                        if (changed)
+                                        {
+                                            s_chromeLastL = rc.Left; s_chromeLastT = rc.Top;
+                                            s_chromeLastR = rc.Right; s_chromeLastB = rc.Bottom;
+                                            s_chromeFreezeAtTicks = DateTime.UtcNow.Ticks + TimeSpan.FromSeconds(3).Ticks;
+                                        }
+                                        if (s_chromeFreezeAtTicks > 0 && DateTime.UtcNow.Ticks >= s_chromeFreezeAtTicks)
+                                            s_chromeRingFrozen = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    catch { /* OS race condition 무시 */ }
+                    System.Threading.Thread.Sleep(20); // 50Hz
+                }
+            });
+            s_chromeWatchThread.IsBackground = true;
+            s_chromeWatchThread.Start();
+        }
+
+        private void StopChromeWatchdog()
+        {
+            s_chromeWatchStop = true;
+            try { s_chromeWatchThread?.Join(100); } catch { }
+            s_chromeWatchThread = null;
+        }
+
+        public static string BuildChromeRingDump()
+        {
+            lock (s_chromeRingLock)
+            {
+                return $"frozen={s_chromeRingFrozen} count={s_chromeRing.Count}\n" + string.Join("\n", s_chromeRing);
+            }
+        }
+
+        [MenuItem("Window/Editor Browser Reset Chrome Ring", priority = 2019)]
+        public static void ResetChromeRing()
+        {
+            lock (s_chromeRingLock)
+            {
+                s_chromeRing.Clear();
+                s_chromeRingFrozen = false;
+                s_chromeFreezeAtTicks = 0;
+                s_chromeLastL = s_chromeLastT = s_chromeLastR = s_chromeLastB = 0;
+            }
+            Debug.Log($"{LogPrefix} Chrome Ring reset");
         }
 
         /// <summary>
@@ -160,7 +344,6 @@ namespace EditorBrowser
                     unityPid,
                     0,
                     EditorBrowser.Native.Win32.WINEVENT_OUTOFCONTEXT);
-                Debug.Log($"{LogPrefix} WinEventHook 등록 hook=0x{_winEventHook.ToInt64():X} pid={unityPid}");
             }
             catch (Exception ex)
             {
@@ -180,9 +363,19 @@ namespace EditorBrowser
 
         private void OnWinEvent(IntPtr hHook, uint eventType, IntPtr hwnd, int idObject, int idChild, uint dwThread, uint dwTime)
         {
-            // 무동작. 본래 z-order 유지용이었으나 사용자 요구: Chrome 은 다른 프로그램에 자연스럽게
-            // 가려지는 NOTOPMOST 유지. 추종은 메인 thread sync(EditorApplication.update + schedule
-            // .Execute + GeometryChangedEvent) 에서 충분.
+            // **drag modal loop 우회 핵심 경로.**
+            // Unity main window 의 OS drag (SC_MOVE/SC_SIZE) modal loop 중에는
+            // EditorApplication.update 와 UI Toolkit schedule.Execute 가 같은 메인 thread
+            // 메시지 펌프에 묶여 차단된다. WinEventHook(WINEVENT_OUTOFCONTEXT) 만이 그
+            // modal loop 안에서도 callback 받을 수 있는 유일한 경로 — 여기서 OnEditorUpdate
+            // 호출해야 drag 중 Chrome 실시간 추종이 보장됨.
+            //
+            // idObject != OBJID_WINDOW 노이즈(스크롤바·메뉴·클라이언트 영역 변화) 제외.
+            // pid 필터는 SetWinEventHook 등록 시 unityPid 로 이미 적용됨.
+            // drift gate 가 같은 RECT 호출은 거의 no-op 이므로 호출 빈도 부담 적음.
+            if (idObject != EditorBrowser.Native.Win32.OBJID_WINDOW) return;
+            _winEventTickCount++;
+            try { OnEditorUpdate(); } catch { /* callback 중 예외가 hook 자체를 죽이지 않게 */ }
         }
 
         private void DisposeHost()
@@ -272,6 +465,25 @@ namespace EditorBrowser
             OnEditorUpdate();
         }
 
+        private void DumpTraceIfDue()
+        {
+            if (!s_traceEnabled) return;
+            var now = EditorApplication.timeSinceStartup;
+            if (now - _lastTraceDumpTime < 1.0) return;
+            _lastTraceDumpTime = now;
+
+            var winPos = position;
+            var bound = _body != null ? _body.worldBound : default;
+            var hs = GetHostScreenTopLeft();
+            Debug.Log($"{LogPrefix} TRACE update={_updateTickCount}/s winEvent={_winEventTickCount}/s " +
+                      $"ew.pos=({winPos.x:F0},{winPos.y:F0}) {winPos.width:F0}x{winPos.height:F0} " +
+                      $"hostScreen=({hs.x:F0},{hs.y:F0}) " +
+                      $"bound=({bound.x:F0},{bound.y:F0}) {bound.width:F0}x{bound.height:F0} " +
+                      $"focused={(focusedWindow == this)} mouseOver={(mouseOverWindow == this)}");
+            _updateTickCount = 0;
+            _winEventTickCount = 0;
+        }
+
         private void OnUrlFieldKeyDown(KeyDownEvent evt)
         {
             if (evt.keyCode != KeyCode.Return && evt.keyCode != KeyCode.KeypadEnter)
@@ -309,76 +521,191 @@ namespace EditorBrowser
             _statusLabel.text = $"Navigated: {url}";
             UpdateNavButtonsState();
 
-            Debug.Log($"{LogPrefix} Navigate -> {url}");
             if (_host == null) return;
 
             // 현재 body 영역에서 spawn — 좌측 상단 점프 회피
-            var (x, y, w, h, valid) = ComputeBodyAbsRect();
-            if (valid) _host.Navigate(url, x, y, w, h);
-            else _pendingInitialUrl = url; // layout 안 됐으면 다음 update 에서 spawn
+            var (x, y, w, h, state) = ComputeBodyAbsRect();
+            if (state == BodyState.Valid) _host.Navigate(url, x, y, w, h);
+            else _pendingInitialUrl = url; // layout/jump 안정화 안 됐으면 다음 update 에서 spawn
         }
 
-        private Rect _lastValidWinPos;
-        private int _validFrameCount; // 의심값 거부 후 안정화 카운트 — N 프레임 연속 valid 시 sync
+        // body 가시성/위치 신뢰도 상태.
+        // Valid  — 새 RECT 로 sync
+        // Hidden — Tab 자체 안 보임 → Chrome hide
+        // Skip   — winPos 가 transient 임시값 (main client 밖) → Chrome 현 위치 유지
+        private enum BodyState { Valid, Hidden, Skip }
 
-        // 의심값 거부 후 sync 재개까지 필요한 안정화 프레임 수.
-        // schedule.Execute(16ms) 와 EditorApplication.update 두 곳에서 호출되므로 실제로는 더 짧음.
-        // drag 종료 직후 EditorWindow.position 이 임시값(0,26 등) → 새 위치로 settle 되는 동안 보호.
-        private const int StabilizationFrames = 3;
-
-        private (int x, int y, int w, int h, bool valid) ComputeBodyAbsRect()
+        private (int x, int y, int w, int h, BodyState state) ComputeBodyAbsRect()
         {
-            if (_body == null) { _validFrameCount = 0; return (0, 0, 0, 0, false); }
+            if (_body == null) return (0, 0, 0, 0, BodyState.Hidden);
 
-            // **Tab inactive 감지**: 같은 dock 안에서 다른 Tab(Console 등) 이 선택되면
-            // _body 가 panel 에서 분리되거나 display:None 처리됨. Chrome 자동 hide.
-            if (_body.panel == null) { _validFrameCount = 0; return (0, 0, 0, 0, false); }
-            if (_body.resolvedStyle.display == DisplayStyle.None) { _validFrameCount = 0; return (0, 0, 0, 0, false); }
-            if (_body.resolvedStyle.visibility == Visibility.Hidden) { _validFrameCount = 0; return (0, 0, 0, 0, false); }
+            // Tab inactive 감지 — 같은 dock 안 다른 Tab(Console 등) 활성화 시 panel 분리/display:None.
+            if (_body.panel == null) return (0, 0, 0, 0, BodyState.Hidden);
+            if (_body.resolvedStyle.display == DisplayStyle.None) return (0, 0, 0, 0, BodyState.Hidden);
+            if (_body.resolvedStyle.visibility == Visibility.Hidden) return (0, 0, 0, 0, BodyState.Hidden);
 
             var bound = _body.worldBound;
             if (float.IsNaN(bound.width) || float.IsNaN(bound.height)
                 || bound.width <= 1f || bound.height <= 1f)
-            { _validFrameCount = 0; return (0, 0, 0, 0, false); }
-
-            var winPos = position;
-
-            // **의심 position 거부 + 안정화 대기**:
-            // - winPos.x < 50 || winPos.y < 50 || width/height < 100 → drag 종료 직후 임시값 추정
-            //   → Chrome 잠시 hide (사용자에게 점프 안 보이게)
-            // - 의심값 사라지고 valid winPos 가 StabilizationFrames 프레임 연속 들어오면 sync 재개
-            //   → drag/resize 가 진짜 settle 된 후 한 번만 새 위치로 이동
-            if (winPos.x < 50f || winPos.y < 50f || winPos.width < 100f || winPos.height < 100f)
             {
-                if (_validFrameCount > 0) // 이전엔 정상이었는데 갑자기 의심값 → 로그 한 번만
-                    Debug.LogWarning($"{LogPrefix} 의심 winPos=({winPos.x:F1},{winPos.y:F1}) 거부 (last valid {_lastValidWinPos.x:F1},{_lastValidWinPos.y:F1})");
-                _validFrameCount = 0;
-                return (0, 0, 0, 0, false); // OnEditorUpdate 가 Hide 호출
+                // drag/dock 변경 후 UI Toolkit panel layout 이 invalidate 되어 worldBound 가
+                // NaN/zero. Hidden 으로 처리하면 Chrome 깜빡임 → Skip 으로 직전 위치 유지.
+                _body.MarkDirtyRepaint();
+                RecordSyncEntry(default, bound, 0, 0, 0, 0, BodyState.Skip);
+                return (0, 0, 0, 0, BodyState.Skip);
             }
 
-            // 큰 점프 감지: 이전 유효 위치와 너무 다르면 drag 종료 후 임시 settle 단계로 판단,
-            // 안정화 대기. 사용자가 실제로 200px 이상 옮긴 경우엔 StabilizationFrames 후 sync.
-            const float JumpThreshold = 300f;
-            bool bigJump = _lastValidWinPos.width > 0f
-                && (Mathf.Abs(winPos.x - _lastValidWinPos.x) > JumpThreshold
-                    || Mathf.Abs(winPos.y - _lastValidWinPos.y) > JumpThreshold);
-
-            _validFrameCount++;
-            _lastValidWinPos = winPos;
-
-            if (bigJump && _validFrameCount < StabilizationFrames)
+            // **본질적 해결책 (2026-05-21):**
+            // `EditorWindow.position` getter 는 dock system frame timing race 로 자주
+            // false transient (예: (0,26)) 값을 반환 → Chrome 좌측 상단 점프의 원인.
+            // 대신 `ContainerWindow.Internal_GetTopleftScreenPosition()` + View tree
+            // m_Position 누적으로 OS-level screen 좌표 직접 획득 (reflection).
+            // floating 으로 떼어낸 Tab 도 ContainerWindow 가 진짜 위치를 보존하므로 동일 공식.
+            var hostScreen = GetHostScreenTopLeft();
+            if (float.IsNaN(hostScreen.x))
             {
-                // 큰 점프지만 아직 안정화 미완 — Chrome 잠시 hide 유지하다가 N 프레임 후 새 위치에 등장
-                return (0, 0, 0, 0, false);
+                RecordSyncEntry(default, bound, 0, 0, 0, 0, BodyState.Skip);
+                return (0, 0, 0, 0, BodyState.Skip);
             }
 
             var scale = EditorGUIUtility.pixelsPerPoint;
-            return (
-                Mathf.RoundToInt((winPos.x + bound.x) * scale),
-                Mathf.RoundToInt((winPos.y + bound.y) * scale),
-                Mathf.RoundToInt(bound.width * scale),
-                Mathf.RoundToInt(bound.height * scale),
-                true);
+            int rAbsX = Mathf.RoundToInt((hostScreen.x + bound.x) * scale);
+            int rAbsY = Mathf.RoundToInt((hostScreen.y + bound.y) * scale);
+            int rAbsW = Mathf.RoundToInt(bound.width * scale);
+            int rAbsH = Mathf.RoundToInt(bound.height * scale);
+
+            // ring buffer 의 winPos 슬롯에는 진단 편의를 위해 hostScreen 을 기록.
+            var winPosForLog = new Rect(hostScreen.x, hostScreen.y, bound.width, bound.height);
+            RecordSyncEntry(winPosForLog, bound, rAbsX, rAbsY, rAbsW, rAbsH, BodyState.Valid);
+            return (rAbsX, rAbsY, rAbsW, rAbsH, BodyState.Valid);
+        }
+
+        private static void EnsureReflectionCache()
+        {
+            if (s_getTopLeftMethod != null || s_reflectionFailed) return;
+            try
+            {
+                var ewType = typeof(UnityEditor.EditorWindow);
+                s_parentField = ewType.GetField("m_Parent",
+                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                if (s_parentField == null) { s_reflectionFailed = true; Debug.LogError($"{LogPrefix} EditorWindow.m_Parent not found"); return; }
+
+                var hostT = s_parentField.FieldType; // HostView
+                var viewT = hostT;
+                while (viewT != null && viewT.Name != "View") viewT = viewT.BaseType;
+                if (viewT == null) { s_reflectionFailed = true; Debug.LogError($"{LogPrefix} UnityEditor.View not found"); return; }
+
+                s_viewWinField = viewT.GetField("m_Window",
+                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                s_viewPosField = viewT.GetField("m_Position",
+                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                s_viewParentField = viewT.GetField("m_Parent",
+                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                if (s_viewWinField == null || s_viewPosField == null || s_viewParentField == null)
+                {
+                    s_reflectionFailed = true;
+                    Debug.LogError($"{LogPrefix} View.{{m_Window,m_Position,m_Parent}} not found");
+                    return;
+                }
+
+                var cwType = s_viewWinField.FieldType; // ContainerWindow
+                s_getTopLeftMethod = cwType.GetMethod("Internal_GetTopleftScreenPosition",
+                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public);
+                if (s_getTopLeftMethod == null)
+                {
+                    s_reflectionFailed = true;
+                    Debug.LogError($"{LogPrefix} ContainerWindow.Internal_GetTopleftScreenPosition not found");
+                }
+            }
+            catch (Exception ex)
+            {
+                s_reflectionFailed = true;
+                Debug.LogError($"{LogPrefix} EnsureReflectionCache: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 본 EditorWindow 의 host(DockArea/HostView) 좌상단 screen 좌표 (points, DPI 미적용).
+        /// 실패 시 NaN 반환. EditorWindow.position 보다 신뢰성 높음 — dock system frame
+        /// timing race 에 면역.
+        /// </summary>
+        private Vector2 GetHostScreenTopLeft()
+        {
+            EnsureReflectionCache();
+            if (s_reflectionFailed) return new Vector2(float.NaN, float.NaN);
+
+            try
+            {
+                var host = s_parentField.GetValue(this);
+                if (host == null) return new Vector2(float.NaN, float.NaN);
+                var container = s_viewWinField.GetValue(host);
+                if (container == null) return new Vector2(float.NaN, float.NaN);
+
+                var topLeft = (Vector2)s_getTopLeftMethod.Invoke(container, null);
+
+                // DockArea 부터 root(MainView) 까지 m_Position.position 누적.
+                // floating: DockArea m_Position=(0,0) → 누적 (0,0)
+                // docked:   DockArea + parent SplitView + ... + MainView 의 offset 합산
+                Vector2 acc = Vector2.zero;
+                object cur = host;
+                // 깊이 제한: pathological cycle 방어
+                for (int depth = 0; cur != null && depth < 16; depth++)
+                {
+                    var pos = (Rect)s_viewPosField.GetValue(cur);
+                    acc += pos.position;
+                    cur = s_viewParentField.GetValue(cur);
+                }
+                return topLeft + acc;
+            }
+            catch (Exception ex)
+            {
+                // 도메인 리로드 race / Unity 버전 차이 등 — 한 번만 로깅
+                if (!s_reflectionFailed)
+                {
+                    s_reflectionFailed = true;
+                    Debug.LogError($"{LogPrefix} GetHostScreenTopLeft: {ex.Message}");
+                }
+                return new Vector2(float.NaN, float.NaN);
+            }
+        }
+
+        private static void RecordSyncEntry(Rect winPos, Rect bound, int absX, int absY, int absW, int absH, BodyState state)
+        {
+            if (s_ringFrozen) return;
+            var slot = s_syncRingIdx % s_syncRing.Length;
+            s_syncRing[slot] = new SyncEntry
+            {
+                time = EditorApplication.timeSinceStartup,
+                winPos = winPos,
+                bound = bound,
+                absX = absX, absY = absY, absW = absW, absH = absH,
+                state = state,
+            };
+            s_syncRingIdx++;
+
+            // 자동 freeze: winPos 변화(=drag 시작) 감지 → 3초 후 정지
+            // → ring 이 drag 시퀀스 + 종료 후 1-2초 안정 entries 포함한 채 보존
+            bool changed = Mathf.Abs(winPos.x - s_changeDetectLastWinPos.x) > 1f
+                        || Mathf.Abs(winPos.y - s_changeDetectLastWinPos.y) > 1f
+                        || Mathf.Abs(winPos.width - s_changeDetectLastWinPos.width) > 1f
+                        || Mathf.Abs(winPos.height - s_changeDetectLastWinPos.height) > 1f;
+            if (changed)
+            {
+                s_changeDetectLastWinPos = winPos;
+                s_freezeAt = EditorApplication.timeSinceStartup + 3.0;
+            }
+            if (s_freezeAt > 0 && EditorApplication.timeSinceStartup >= s_freezeAt)
+                s_ringFrozen = true;
+        }
+
+        [MenuItem("Window/Editor Browser Reset Sync Ring", priority = 2018)]
+        public static void ResetSyncRing()
+        {
+            s_syncRingIdx = 0;
+            s_ringFrozen = false;
+            s_freezeAt = 0;
+            s_changeDetectLastWinPos = default;
+            Debug.Log($"{LogPrefix} Sync Ring reset — ready for next drag");
         }
 
         private void UpdateNavButtonsState()
@@ -394,13 +721,26 @@ namespace EditorBrowser
         private void OnEditorUpdate()
         {
             if (_host == null || _body == null) return;
+            _updateTickCount++;
+            DumpTraceIfDue();
+            // watchdog thread 가 access 할 정적 hwnd 갱신
+            s_browserHwndForWatch = _host.BrowserHwnd;
 
-            var (absX, absY, absW, absH, valid) = ComputeBodyAbsRect();
-            if (!valid)
+            var (absX, absY, absW, absH, state) = ComputeBodyAbsRect();
+            if (state == BodyState.Hidden)
             {
-                // body 가 비정상(의심 winPos / Tab inactive / 비표시) → Chrome 즉시 hide.
-                // 사용자가 같은 dock 의 다른 Tab(Console 등) 을 선택해도 자동으로 Chrome 사라짐.
+                // Tab 자체가 안 보임 (panel detached / display:None / 0 사이즈) → Chrome hide.
                 _host.Hide();
+                return;
+            }
+            if (state == BodyState.Skip)
+            {
+                // body bound NaN/zero 또는 reflection 실패 — Chrome 현 위치 유지. hide 하면 깜빡임.
+                if (s_traceEnabled)
+                {
+                    var hs = GetHostScreenTopLeft();
+                    Debug.LogWarning($"{LogPrefix} SKIPPED hostScreen=({hs.x:F0},{hs.y:F0}) — bound NaN/zero or reflection unavailable");
+                }
                 return;
             }
 
