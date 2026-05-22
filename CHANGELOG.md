@@ -3,6 +3,13 @@
 This package follows [Keep a Changelog](https://keepachangelog.com/) and
 [SemVer](https://semver.org/).
 
+## [0.3.0] - 2026-05-22
+
+### Changed
+- Code-wide pass: translated all source comments and XML docs to English,
+  removed redundant comments that only described what the code does, and
+  trimmed stale references to historical fixes. Behavior unchanged.
+
 ## [0.2.4] - 2026-05-22
 
 ### Changed

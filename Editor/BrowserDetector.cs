@@ -25,9 +25,9 @@ namespace EditorBrowser
     }
 
     /// <summary>
-    /// Chrome/Edge 설치 감지. 레지스트리 의존을 피하고 알려진 설치 경로만 점검한다.
-    /// (.NET Standard 2.1 환경에서 Microsoft.Win32.Registry는 별도 NuGet 패키지가 필요하므로
-    ///  파일 시스템 기반 감지로 통일 — 휴대용 Chrome 등은 V2에서 EditorPref 오버라이드 지원 예정.)
+    /// Detects an installed Chrome (preferred) or Edge by checking the known
+    /// install paths. Avoids registry access because Microsoft.Win32.Registry
+    /// requires an extra NuGet under .NET Standard 2.1.
     /// </summary>
     internal static class BrowserDetector
     {
@@ -79,7 +79,6 @@ namespace EditorBrowser
                 }
                 catch
                 {
-                    // 권한·UNC 등 예외는 무시하고 다음 후보로
                 }
             }
             return null;
