@@ -3,6 +3,32 @@
 This package follows [Keep a Changelog](https://keepachangelog.com/) and
 [SemVer](https://semver.org/).
 
+## [0.4.4] - 2026-05-22
+
+### Added
+- `EditorBrowser.Automation.CdpConnection` — single-WebSocket CDP transport.
+  Auto-incrementing message ids, send-await-response via
+  `TaskCompletionSource`, event dispatch by method name, graceful close,
+  thread-safe send via async semaphore, background receive loop with
+  pending-TCS fail-on-close cleanup. Rewrites `ws://localhost:` to
+  `ws://127.0.0.1:` to dodge the IPv6 DNS fallback that adds ~2s on .NET.
+- `EditorBrowser.Automation.CdpSession` — thin logical wrapper over
+  `CdpConnection` with an optional `sessionId`. Null sessionId targets
+  the per-target WS endpoint directly (current default); a set sessionId
+  prefixes every command with `"sessionId":"..."` for the future
+  browser-WS / pipe multiplexing path.
+
+No callers yet — the existing `ExternalBrowserHost.CdpNavigate` keeps
+its inline implementation. These library classes are the foundation that
+future Protocol/Page, Protocol/Runtime, and McpTools layers will build on.
+
+### Notes
+- `CdpConnection` and `CdpSession` currently live in the same source file
+  (`CdpConnection.cs`) because this Unity Editor session held a stale
+  CompilationPipeline cache that refused to recognize a sibling .cs file
+  in the same asmdef. Splitting into two files is purely organizational
+  and can be done in a future Editor session.
+
 ## [0.4.3] - 2026-05-22
 
 ### Added
