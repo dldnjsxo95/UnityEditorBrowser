@@ -3,6 +3,41 @@
 This package follows [Keep a Changelog](https://keepachangelog.com/) and
 [SemVer](https://semver.org/).
 
+## [0.4.8] - 2026-05-22
+
+### Changed
+- `.claude/commands/eb.md` (the `/eb` slash command) is now portable. The
+  previous version hardcoded this repo's Unity install path
+  (`6000.0.59f2`) and project path
+  (`C:\Users\pnc\Desktop\LWT\Projects\EditorBrowser`); a downstream
+  consumer who copied it as-is would always launch the wrong project (or
+  none, if that exact Unity version was missing).
+- New behavior:
+  - Project path is taken from the consumer's CWD via `pwd`, not a
+    hardcoded constant.
+  - Unity exe is discovered by listing `C:/Program Files/Unity/Hub/Editor/`
+    (with `D:/Program Files/...` fallback) and picking the highest
+    `6000.x` build whose `Editor/Unity.exe` exists. Hardcoded
+    `6000.0.59f2` is gone.
+  - Target instance is selected by matching the running instance whose
+    `path` is under CWD, instead of by hardcoded project-name suffix
+    (`EditorBrowser/Assets`). When multiple match, the skill asks one
+    short clarifying question.
+  - Example instance id in Step 2 generalized from `EditorBrowser@<hash>`
+    to `<name>@<hash>`.
+
+### Docs
+- README "Optional: Claude Code `/eb`" subsection rewritten. Removed the
+  "edit these two paths before first use" caveat (now obsolete) and
+  documented both install locations — per-project (`<project>/.claude/commands/`)
+  and user-global (`%USERPROFILE%\.claude\commands\`). Added a sentence
+  about multi-instance behavior so users know what to expect when they
+  also have other Unity projects open.
+- README install snippet: pinned tag bumped `#v0.4.7` → `#v0.4.8`.
+
+No package code or asmdef changes — slash command + docs only. The
+package still works identically without UnityMCP / Claude Code installed.
+
 ## [0.4.7] - 2026-05-22
 
 ### Docs

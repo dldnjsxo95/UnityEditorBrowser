@@ -29,12 +29,12 @@ Add this line to your project's `Packages/manifest.json`:
 ```json
 {
   "dependencies": {
-    "com.lwt.editor-browser": "https://github.com/dldnjsxo95/UnityEditorBrowser.git#v0.4.7"
+    "com.lwt.editor-browser": "https://github.com/dldnjsxo95/UnityEditorBrowser.git#v0.4.8"
   }
 }
 ```
 
-The `#v0.4.7` tag locks the version. Omit it to always follow `main`.
+The `#v0.4.8` tag locks the version. Omit it to always follow `main`.
 
 Unity Package Manager fetches and compiles the package automatically. The
 menu item `Window > Editor Browser` and the shortcut `Shift + Alt + W`
@@ -57,9 +57,20 @@ If you use [Claude Code](https://claude.com/claude-code) with the
 `/eb <natural-language>` slash command at
 [`.claude/commands/eb.md`](https://github.com/dldnjsxo95/UnityEditorBrowser/blob/main/.claude/commands/eb.md)
 that drives the browser via the `editor_browser` MCP tool (e.g.
-`/eb open naver and search 맛집`). Copy that file into your project's
-`.claude/commands/` folder. Note: the file currently hardcodes this repo's
-Unity install path and project path — edit those two values before first use.
+`/eb open naver and search 맛집`).
+
+Install in either location — no editing required (since v0.4.8 the file
+detects your project path via `pwd` and the latest Unity 6 install
+under `Hub/Editor/`):
+
+- **Per-project** — copy to `<your-project>/.claude/commands/eb.md`.
+- **User-global** — copy to `%USERPROFILE%\.claude\commands\eb.md`
+  (`~/.claude/commands/eb.md` on Linux/macOS) to enable `/eb` in every
+  Claude Code session, regardless of project.
+
+When multiple Unity instances are open at once, the skill prefers the
+instance whose project path matches your current working directory and
+will ask once if there is genuine ambiguity.
 
 ## Usage
 
