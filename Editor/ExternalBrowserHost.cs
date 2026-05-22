@@ -92,11 +92,7 @@ namespace EditorBrowser
         {
             if (string.IsNullOrEmpty(url)) return;
 
-            if (!IsRunningOnWindows())
-            {
-                Debug.LogWarning($"{LogPrefix} External browser embedding is currently Windows-only.");
-                return;
-            }
+            if (!IsRunningOnWindows()) return;
 
             if (IsAlive)
             {
@@ -269,36 +265,6 @@ namespace EditorBrowser
             DisposeProcess();
         }
 
-        /// <summary>
-        /// Dump host state and live HWND properties to the console. Each
-        /// item is logged separately so multi-line console readers (read_console
-        /// in MCP for Unity) see every value.
-        /// </summary>
-        public void DumpDiagnostics()
-        {
-            Debug.Log($"{LogPrefix} DIAG-01 IsAlive={IsAlive} IsAttached={IsAttached} _visible={_visible}");
-            Debug.Log($"{LogPrefix} DIAG-02 process pid={ProcessId} hasExited={_process?.HasExited.ToString() ?? "(null)"}");
-            Debug.Log($"{LogPrefix} DIAG-03 _browserHwnd=0x{_browserHwnd.ToInt64():X} _unityHwnd=0x{_unityHwnd.ToInt64():X}");
-            Debug.Log($"{LogPrefix} DIAG-04 lastRect=({_lastX},{_lastY}) {_lastW}x{_lastH}");
-
-            if (_browserHwnd != IntPtr.Zero && Win32.IsWindow(_browserHwnd))
-            {
-                var style = (uint)Win32.GetWindowLongPtr(_browserHwnd, Win32.GWL_STYLE).ToInt64();
-                var ex = (uint)Win32.GetWindowLongPtr(_browserHwnd, Win32.GWL_EXSTYLE).ToInt64();
-                Win32.GetWindowRect(_browserHwnd, out var rect);
-                var cn = new StringBuilder(256);
-                Win32.GetClassName(_browserHwnd, cn, cn.Capacity);
-                Debug.Log($"{LogPrefix} DIAG-05 style=0x{style:X} WS_CHILD={(style & Win32.WS_CHILD) != 0} WS_CAPTION={(style & Win32.WS_CAPTION) != 0} WS_VISIBLE={(style & Win32.WS_VISIBLE) != 0}");
-                Debug.Log($"{LogPrefix} DIAG-06 exstyle=0x{ex:X}");
-                Debug.Log($"{LogPrefix} DIAG-07 screenRect=({rect.Left},{rect.Top})-({rect.Right},{rect.Bottom}) size={rect.Right - rect.Left}x{rect.Bottom - rect.Top}");
-                Debug.Log($"{LogPrefix} DIAG-08 class='{cn}' IsWindowVisible={Win32.IsWindowVisible(_browserHwnd)}");
-            }
-            else
-            {
-                Debug.Log($"{LogPrefix} DIAG-05 (no valid browser hwnd to introspect)");
-            }
-        }
-
         private static bool IsRunningOnWindows()
         {
             return Application.platform == RuntimePlatform.WindowsEditor;
@@ -314,10 +280,7 @@ namespace EditorBrowser
             }
 
             try { Directory.CreateDirectory(UserDataDirRoot); }
-            catch (Exception ex)
-            {
-                Debug.LogWarning($"{LogPrefix} Failed to create user-data-dir ({ex.Message}); falling back to the default profile.");
-            }
+            catch { }
 
             // --app=url enables the PWA "app" mode (no tabs/address/menu).
             // --user-data-dir isolates from the user's regular profile.
@@ -447,11 +410,7 @@ namespace EditorBrowser
 
             if (_unityHwnd == IntPtr.Zero || !Win32.IsWindow(_unityHwnd))
                 _unityHwnd = Process.GetCurrentProcess().MainWindowHandle;
-            if (_unityHwnd == IntPtr.Zero)
-            {
-                Debug.LogWarning($"{LogPrefix} Could not resolve Unity main HWND yet; will retry next tick.");
-                return false;
-            }
+            if (_unityHwnd == IntPtr.Zero) return false;
 
             // 1) Hide while we mutate styles, to avoid a one-frame flash.
             Win32.ShowWindow(found, Win32.SW_HIDE);
@@ -525,10 +484,7 @@ namespace EditorBrowser
                     if (int.TryParse(pidStr, out var pid) && pid > 0) return pid;
                 }
             }
-            catch (Exception ex)
-            {
-                Debug.LogWarning($"{LogPrefix} wmic Chrome PID lookup failed: {ex.Message}");
-            }
+            catch { }
             return 0;
         }
 

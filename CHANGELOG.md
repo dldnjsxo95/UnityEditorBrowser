@@ -3,6 +3,23 @@
 This package follows [Keep a Changelog](https://keepachangelog.com/) and
 [SemVer](https://semver.org/).
 
+## [0.4.0] - 2026-05-22
+
+### Changed
+- Stripped diagnostic scaffolding from the package: removed eight
+  troubleshooting menu items (`Editor Browser Test Move/Resize/Drag Sim`,
+  `Toggle Sync Trace`, `Dump Sync Ring`, `Reset Sync Ring`,
+  `Reset Chrome Ring`, `Diagnostics`), the sync-ring + chrome-ring buffers,
+  trace counters, `RecordSyncEntry`, `DumpTraceIfDue`, `BuildSyncRingDump`,
+  `BuildChromeRingDump`, and `DumpDiagnostics`. Net −289 lines.
+- Kept nine `Debug.LogError` calls for user-visible failures only:
+  browser-not-detected, `CreateProcess` failures (both paths), and the
+  six reflection-cache breakages (`s_reflectionFailed` ensures each fires
+  at most once per session).
+- Watchdog enforce path (`SetWindowPos` from the background thread when
+  the browser HWND drifts) is preserved — only its diagnostic logging
+  block was removed.
+
 ## [0.3.0] - 2026-05-22
 
 ### Changed

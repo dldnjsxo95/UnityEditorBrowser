@@ -48,117 +48,9 @@ namespace EditorBrowser
             win.Focus();
         }
 
-        // ---------- Diagnostic menu items (kept for runtime troubleshooting) ----------
-
-        [MenuItem("Window/Editor Browser Test Move", priority = 2013)]
-        public static void TestMove()
-        {
-            var wins = Resources.FindObjectsOfTypeAll<BrowserWindow>();
-            if (wins == null || wins.Length == 0) { Debug.Log($"{LogPrefix} TestMove: no BrowserWindow"); return; }
-            var w = wins[0];
-            var p = w.position;
-            w.position = new Rect(p.x + 200f, p.y + 100f, Mathf.Max(p.width - 20f, 200f), Mathf.Max(p.height - 20f, 200f));
-            Debug.Log($"{LogPrefix} TestMove: {p} → {w.position}");
-        }
-
-        [MenuItem("Window/Editor Browser Test Resize", priority = 2014)]
-        public static void TestResize()
-        {
-            var wins = Resources.FindObjectsOfTypeAll<BrowserWindow>();
-            if (wins == null || wins.Length == 0) return;
-            var w = wins[0];
-            var p = w.position;
-            w.position = new Rect(p.x, p.y, p.width + 150f, p.height + 100f);
-            Debug.Log($"{LogPrefix} TestResize: {p} → {w.position}");
-        }
-
-        [MenuItem("Window/Editor Browser Test Drag Sim", priority = 2015)]
-        public static void TestDragSim()
-        {
-            var wins = Resources.FindObjectsOfTypeAll<BrowserWindow>();
-            if (wins == null || wins.Length == 0) return;
-            var w = wins[0];
-            var start = w.position;
-            Debug.Log($"{LogPrefix} TestDragSim start: {start}");
-            int step = 0;
-            EditorApplication.CallbackFunction tick = null;
-            var last = EditorApplication.timeSinceStartup;
-            tick = () => {
-                if (EditorApplication.timeSinceStartup - last < 0.1) return;
-                last = EditorApplication.timeSinceStartup;
-                if (step++ >= 5) {
-                    EditorApplication.update -= tick;
-                    Debug.Log($"{LogPrefix} TestDragSim end: {w.position}");
-                    return;
-                }
-                var p = w.position;
-                w.position = new Rect(p.x + 30f, p.y + 20f, p.width, p.height);
-                Debug.Log($"{LogPrefix} TestDragSim step {step}: → ({w.position.x},{w.position.y})");
-            };
-            EditorApplication.update += tick;
-        }
-
-        [MenuItem("Window/Editor Browser Toggle Sync Trace", priority = 2016)]
-        public static void ToggleSyncTrace()
-        {
-            s_traceEnabled = !s_traceEnabled;
-            Debug.Log($"{LogPrefix} Sync Trace = {(s_traceEnabled ? "ON" : "OFF")}");
-        }
-
-        [MenuItem("Window/Editor Browser Dump Sync Ring", priority = 2017)]
-        public static void DumpSyncRing()
-        {
-            Debug.Log(BuildSyncRingDump());
-        }
-
-        /// <summary>String form of <see cref="DumpSyncRing"/> for programmatic access (e.g. via MCP).</summary>
-        public static string BuildSyncRingDump()
-        {
-            int total = s_syncRing.Length;
-            int n = Math.Min(s_syncRingIdx, total);
-            int start = (s_syncRingIdx - n + total) % total;
-            var sb = new System.Text.StringBuilder();
-            sb.AppendLine($"{LogPrefix} === Sync Ring ({n} entries, idx={s_syncRingIdx}) ===");
-            for (int i = 0; i < n; i++)
-            {
-                var e = s_syncRing[(start + i) % total];
-                sb.AppendLine($"  [{e.time:F3}] winPos=({e.winPos.x:F0},{e.winPos.y:F0}) {e.winPos.width:F0}x{e.winPos.height:F0} " +
-                              $"bound=({e.bound.x:F0},{e.bound.y:F0}) {e.bound.width:F0}x{e.bound.height:F0} " +
-                              $"abs=({e.absX},{e.absY}) {e.absW}x{e.absH} state={e.state}");
-            }
-            return sb.ToString();
-        }
-
-        // Separate top-level menu path. Putting both "Window/Editor Browser"
-        // (leaf, OpenWindow) and "Window/Editor Browser/<sub>" submenu items
-        // under the same path can cause Unity to hide the leaf entry.
-        [MenuItem("Window/Editor Browser Diagnostics", priority = 2012)]
-        public static void DumpDiagnostics()
-        {
-            var wins = Resources.FindObjectsOfTypeAll<BrowserWindow>();
-            if (wins == null || wins.Length == 0)
-            {
-                Debug.Log($"{LogPrefix} Diagnostics: BrowserWindow is closed — opening it.");
-                OpenWindow();
-                EditorApplication.delayCall += () =>
-                {
-                    var w = Resources.FindObjectsOfTypeAll<BrowserWindow>();
-                    foreach (var x in w) x._host?.DumpDiagnostics();
-                };
-                return;
-            }
-            foreach (var w in wins)
-                w._host?.DumpDiagnostics();
-        }
-
         private IVisualElementScheduledItem _syncSchedule;
         private IntPtr _winEventHook = IntPtr.Zero;
         private EditorBrowser.Native.Win32.WinEventDelegate _winEventDelegate; // keep alive against GC
-
-        private static bool s_traceEnabled;
-        private int _updateTickCount;
-        private int _winEventTickCount;
-        private double _lastTraceDumpTime;
 
         // ----- Reflection cache for UnityEditor internal ContainerWindow API.
         //
@@ -179,41 +71,13 @@ namespace EditorBrowser
         private static System.Reflection.MethodInfo s_getTopLeftMethod;
         private static bool s_reflectionFailed;
 
-        // ----- Sync ring buffer (diagnostic) -------------------------------
-        // Captures each ComputeBodyAbsRect call so a post-mortem dump can
-        // pinpoint the frame where a position jump happens.
-        private struct SyncEntry
-        {
-            public double time;
-            public Rect winPos;
-            public Rect bound;
-            public int absX, absY, absW, absH;
-            public BodyState state;
-        }
-        // 3000 entries ≈ 50 s at 60 Hz — enough to retain a full drag + a
-        // couple of seconds of post-drag stable frames.
-        private static readonly SyncEntry[] s_syncRing = new SyncEntry[3000];
-        private static int s_syncRingIdx;
-        // Auto-freeze: once the position has been stable for 3 s after the
-        // last change, stop recording. A drag sequence + its tail is then
-        // safe to dump even if more frames fly by before someone reads it.
-        private static bool s_ringFrozen;
-        private static Rect s_changeDetectLastWinPos;
-        private static double s_freezeAt;
-
         // ----- Chrome HWND watchdog (background thread) --------------------
         // While the main thread is blocked inside the OS drag modal loop,
         // a background thread polls Chrome's OS-level RECT every 20 ms and
         // forces it back to the last known good position via SetWindowPos
-        // (which is thread-safe). It also writes diagnostic entries to its
-        // own auto-freezing ring buffer.
+        // (which is thread-safe).
         private static System.Threading.Thread s_chromeWatchThread;
         private static volatile bool s_chromeWatchStop;
-        private static readonly System.Collections.Generic.List<string> s_chromeRing = new System.Collections.Generic.List<string>();
-        private static readonly object s_chromeRingLock = new object();
-        private static volatile bool s_chromeRingFrozen;
-        private static long s_chromeFreezeAtTicks;
-        private static int s_chromeLastL, s_chromeLastT, s_chromeLastR, s_chromeLastB;
         // Static handle so the background watch thread doesn't need to
         // touch any instance state.
         private static volatile IntPtr s_browserHwndForWatch;
@@ -277,25 +141,6 @@ namespace EditorBrowser
                                             EditorBrowser.Native.Win32.SWP_NOACTIVATE);
                                     }
                                 }
-
-                                lock (s_chromeRingLock)
-                                {
-                                    if (!s_chromeRingFrozen)
-                                    {
-                                        s_chromeRing.Add($"{DateTime.UtcNow.Ticks} chrome=({rc.Left},{rc.Top})-({rc.Right},{rc.Bottom}) {rc.Right-rc.Left}x{rc.Bottom-rc.Top} vis={vis} enforce={(ExternalBrowserHost.s_enforceEnabled ? $"({ExternalBrowserHost.s_enforceX},{ExternalBrowserHost.s_enforceY}) {ExternalBrowserHost.s_enforceW}x{ExternalBrowserHost.s_enforceH}" : "OFF")}");
-                                        if (s_chromeRing.Count > 3000) s_chromeRing.RemoveAt(0);
-                                        bool changed = rc.Left != s_chromeLastL || rc.Top != s_chromeLastT
-                                                    || rc.Right != s_chromeLastR || rc.Bottom != s_chromeLastB;
-                                        if (changed)
-                                        {
-                                            s_chromeLastL = rc.Left; s_chromeLastT = rc.Top;
-                                            s_chromeLastR = rc.Right; s_chromeLastB = rc.Bottom;
-                                            s_chromeFreezeAtTicks = DateTime.UtcNow.Ticks + TimeSpan.FromSeconds(3).Ticks;
-                                        }
-                                        if (s_chromeFreezeAtTicks > 0 && DateTime.UtcNow.Ticks >= s_chromeFreezeAtTicks)
-                                            s_chromeRingFrozen = true;
-                                    }
-                                }
                             }
                         }
                     }
@@ -312,27 +157,6 @@ namespace EditorBrowser
             s_chromeWatchStop = true;
             try { s_chromeWatchThread?.Join(100); } catch { }
             s_chromeWatchThread = null;
-        }
-
-        public static string BuildChromeRingDump()
-        {
-            lock (s_chromeRingLock)
-            {
-                return $"frozen={s_chromeRingFrozen} count={s_chromeRing.Count}\n" + string.Join("\n", s_chromeRing);
-            }
-        }
-
-        [MenuItem("Window/Editor Browser Reset Chrome Ring", priority = 2019)]
-        public static void ResetChromeRing()
-        {
-            lock (s_chromeRingLock)
-            {
-                s_chromeRing.Clear();
-                s_chromeRingFrozen = false;
-                s_chromeFreezeAtTicks = 0;
-                s_chromeLastL = s_chromeLastT = s_chromeLastR = s_chromeLastB = 0;
-            }
-            Debug.Log($"{LogPrefix} Chrome Ring reset");
         }
 
         /// <summary>
@@ -358,10 +182,7 @@ namespace EditorBrowser
                     0,
                     EditorBrowser.Native.Win32.WINEVENT_OUTOFCONTEXT);
             }
-            catch (Exception ex)
-            {
-                Debug.LogWarning($"{LogPrefix} WinEventHook registration failed: {ex.Message}");
-            }
+            catch { }
         }
 
         private void UninstallWinEventHook()
@@ -380,7 +201,6 @@ namespace EditorBrowser
             // client-area updates) which are noise here. The PID filter
             // already applied at SetWinEventHook registration.
             if (idObject != EditorBrowser.Native.Win32.OBJID_WINDOW) return;
-            _winEventTickCount++;
             // Don't let an exception from a callback kill the hook itself.
             try { OnEditorUpdate(); } catch { }
         }
@@ -479,25 +299,6 @@ namespace EditorBrowser
         private void OnBodyGeometryChanged(GeometryChangedEvent _)
         {
             OnEditorUpdate();
-        }
-
-        private void DumpTraceIfDue()
-        {
-            if (!s_traceEnabled) return;
-            var now = EditorApplication.timeSinceStartup;
-            if (now - _lastTraceDumpTime < 1.0) return;
-            _lastTraceDumpTime = now;
-
-            var winPos = position;
-            var bound = _body != null ? _body.worldBound : default;
-            var hs = GetHostScreenTopLeft();
-            Debug.Log($"{LogPrefix} TRACE update={_updateTickCount}/s winEvent={_winEventTickCount}/s " +
-                      $"ew.pos=({winPos.x:F0},{winPos.y:F0}) {winPos.width:F0}x{winPos.height:F0} " +
-                      $"hostScreen=({hs.x:F0},{hs.y:F0}) " +
-                      $"bound=({bound.x:F0},{bound.y:F0}) {bound.width:F0}x{bound.height:F0} " +
-                      $"focused={(focusedWindow == this)} mouseOver={(mouseOverWindow == this)}");
-            _updateTickCount = 0;
-            _winEventTickCount = 0;
         }
 
         private double _lastSubmitTime;
@@ -606,18 +407,15 @@ namespace EditorBrowser
                 // Hidden would hide the browser and produce a visible
                 // flicker; Skip leaves it in place and we request a relayout.
                 _body.MarkDirtyRepaint();
-                RecordSyncEntry(default, bound, 0, 0, 0, 0, BodyState.Skip);
                 return (0, 0, 0, 0, BodyState.Skip);
             }
 
             // EditorWindow.position returns false transient values during
-            // dock-system frame races (see the cache block above for the
-            // detailed reasoning). Read the host screen origin via the
+            // dock-system frame races. Read the host screen origin via the
             // ContainerWindow reflection cache instead.
             var hostScreen = GetHostScreenTopLeft();
             if (float.IsNaN(hostScreen.x))
             {
-                RecordSyncEntry(default, bound, 0, 0, 0, 0, BodyState.Skip);
                 return (0, 0, 0, 0, BodyState.Skip);
             }
 
@@ -626,11 +424,6 @@ namespace EditorBrowser
             int rAbsY = Mathf.RoundToInt((hostScreen.y + bound.y) * scale);
             int rAbsW = Mathf.RoundToInt(bound.width * scale);
             int rAbsH = Mathf.RoundToInt(bound.height * scale);
-
-            // The ring buffer logs hostScreen in the winPos slot for
-            // easier post-mortem analysis.
-            var winPosForLog = new Rect(hostScreen.x, hostScreen.y, bound.width, bound.height);
-            RecordSyncEntry(winPosForLog, bound, rAbsX, rAbsY, rAbsW, rAbsH, BodyState.Valid);
             return (rAbsX, rAbsY, rAbsW, rAbsH, BodyState.Valid);
         }
 
@@ -642,12 +435,22 @@ namespace EditorBrowser
                 var ewType = typeof(UnityEditor.EditorWindow);
                 s_parentField = ewType.GetField("m_Parent",
                     System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                if (s_parentField == null) { s_reflectionFailed = true; Debug.LogError($"{LogPrefix} EditorWindow.m_Parent not found"); return; }
+                if (s_parentField == null)
+                {
+                    s_reflectionFailed = true;
+                    Debug.LogError($"{LogPrefix} EditorWindow.m_Parent not found (Unity API changed?)");
+                    return;
+                }
 
                 var hostT = s_parentField.FieldType; // HostView
                 var viewT = hostT;
                 while (viewT != null && viewT.Name != "View") viewT = viewT.BaseType;
-                if (viewT == null) { s_reflectionFailed = true; Debug.LogError($"{LogPrefix} UnityEditor.View not found"); return; }
+                if (viewT == null)
+                {
+                    s_reflectionFailed = true;
+                    Debug.LogError($"{LogPrefix} UnityEditor.View base type not found (Unity API changed?)");
+                    return;
+                }
 
                 s_viewWinField = viewT.GetField("m_Window",
                     System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
@@ -658,7 +461,7 @@ namespace EditorBrowser
                 if (s_viewWinField == null || s_viewPosField == null || s_viewParentField == null)
                 {
                     s_reflectionFailed = true;
-                    Debug.LogError($"{LogPrefix} View.{{m_Window,m_Position,m_Parent}} not found");
+                    Debug.LogError($"{LogPrefix} View.{{m_Window,m_Position,m_Parent}} not found (Unity API changed?)");
                     return;
                 }
 
@@ -668,13 +471,13 @@ namespace EditorBrowser
                 if (s_getTopLeftMethod == null)
                 {
                     s_reflectionFailed = true;
-                    Debug.LogError($"{LogPrefix} ContainerWindow.Internal_GetTopleftScreenPosition not found");
+                    Debug.LogError($"{LogPrefix} ContainerWindow.Internal_GetTopleftScreenPosition not found (Unity API changed?)");
                 }
             }
             catch (Exception ex)
             {
                 s_reflectionFailed = true;
-                Debug.LogError($"{LogPrefix} EnsureReflectionCache: {ex.Message}");
+                Debug.LogError($"{LogPrefix} EnsureReflectionCache failed: {ex.Message}");
             }
         }
 
@@ -718,50 +521,10 @@ namespace EditorBrowser
                 if (!s_reflectionFailed)
                 {
                     s_reflectionFailed = true;
-                    Debug.LogError($"{LogPrefix} GetHostScreenTopLeft: {ex.Message}");
+                    Debug.LogError($"{LogPrefix} GetHostScreenTopLeft failed: {ex.Message}");
                 }
                 return new Vector2(float.NaN, float.NaN);
             }
-        }
-
-        private static void RecordSyncEntry(Rect winPos, Rect bound, int absX, int absY, int absW, int absH, BodyState state)
-        {
-            if (s_ringFrozen) return;
-            var slot = s_syncRingIdx % s_syncRing.Length;
-            s_syncRing[slot] = new SyncEntry
-            {
-                time = EditorApplication.timeSinceStartup,
-                winPos = winPos,
-                bound = bound,
-                absX = absX, absY = absY, absW = absW, absH = absH,
-                state = state,
-            };
-            s_syncRingIdx++;
-
-            // Auto-freeze: detect any position change and freeze 3 s after
-            // the last change so the ring keeps the drag sequence plus a
-            // couple of seconds of post-drag stable frames.
-            bool changed = Mathf.Abs(winPos.x - s_changeDetectLastWinPos.x) > 1f
-                        || Mathf.Abs(winPos.y - s_changeDetectLastWinPos.y) > 1f
-                        || Mathf.Abs(winPos.width - s_changeDetectLastWinPos.width) > 1f
-                        || Mathf.Abs(winPos.height - s_changeDetectLastWinPos.height) > 1f;
-            if (changed)
-            {
-                s_changeDetectLastWinPos = winPos;
-                s_freezeAt = EditorApplication.timeSinceStartup + 3.0;
-            }
-            if (s_freezeAt > 0 && EditorApplication.timeSinceStartup >= s_freezeAt)
-                s_ringFrozen = true;
-        }
-
-        [MenuItem("Window/Editor Browser Reset Sync Ring", priority = 2018)]
-        public static void ResetSyncRing()
-        {
-            s_syncRingIdx = 0;
-            s_ringFrozen = false;
-            s_freezeAt = 0;
-            s_changeDetectLastWinPos = default;
-            Debug.Log($"{LogPrefix} Sync Ring reset — ready for next drag");
         }
 
         private void UpdateNavButtonsState()
@@ -778,8 +541,6 @@ namespace EditorBrowser
         private void OnEditorUpdate()
         {
             if (_host == null || _body == null) return;
-            _updateTickCount++;
-            DumpTraceIfDue();
             // Keep the watchdog thread's static handle current.
             s_browserHwndForWatch = _host.BrowserHwnd;
 
@@ -793,11 +554,6 @@ namespace EditorBrowser
             {
                 // bound NaN/zero or reflection unavailable — leave the
                 // browser at its current position to avoid flicker.
-                if (s_traceEnabled)
-                {
-                    var hs = GetHostScreenTopLeft();
-                    Debug.LogWarning($"{LogPrefix} SKIPPED hostScreen=({hs.x:F0},{hs.y:F0}) — bound NaN/zero or reflection unavailable");
-                }
                 return;
             }
 
