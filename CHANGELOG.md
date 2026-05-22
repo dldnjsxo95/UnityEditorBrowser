@@ -3,6 +3,18 @@
 This package follows [Keep a Changelog](https://keepachangelog.com/) and
 [SemVer](https://semver.org/).
 
+## [0.4.3] - 2026-05-22
+
+### Added
+- Empty `EditorBrowser.Automation` asmdef scaffold at
+  `Editor/Automation/EditorBrowser.Automation.asmdef`. Editor-only,
+  `rootNamespace=EditorBrowser.Automation`, references `EditorBrowser.Editor`
+  (so future code can reach `ExternalBrowserHost`). No `.cs` files yet, so
+  Unity does not build a DLL — this is purely an assembly boundary marker
+  that future CDP automation code (`CdpConnection`, `CdpSession`,
+  `Protocol/Page`, `Protocol/Runtime`, `McpTools`) will live in. No-op
+  for current consumers.
+
 ## [0.4.2] - 2026-05-22
 
 ### Changed

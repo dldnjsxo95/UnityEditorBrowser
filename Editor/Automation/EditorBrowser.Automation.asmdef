@@ -1,0 +1,17 @@
+{
+    "name": "EditorBrowser.Automation",
+    "rootNamespace": "EditorBrowser.Automation",
+    "references": [
+        "EditorBrowser.Editor"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
