@@ -3,6 +3,20 @@
 This package follows [Keep a Changelog](https://keepachangelog.com/) and
 [SemVer](https://semver.org/).
 
+## [0.4.7] - 2026-05-22
+
+### Docs
+- README: added new "Optional: Claude Code `/eb` slash command" subsection
+  under Installation. Points consumers at `.claude/commands/eb.md`, names
+  the `editor_browser` MCP tool it wraps, and flags the two hardcoded paths
+  (Unity install + project path) that downstream users must edit. Intended
+  for the v0.4.6 MCP wiring to actually be discoverable by UPM consumers.
+- README install snippet: pinned tag bumped `#v0.3.0` → `#v0.4.7`. The
+  previous pin was six releases stale — anyone copy-pasting the snippet was
+  silently installing pre-port-discovery, pre-CDP-refactor, pre-MCP code.
+
+No code or asmdef changes — pure documentation patch.
+
 ## [0.4.6] - 2026-05-22
 
 ### Added (Step 4a — handoff)
