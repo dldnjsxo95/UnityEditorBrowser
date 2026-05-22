@@ -29,12 +29,12 @@ Add this line to your project's `Packages/manifest.json`:
 ```json
 {
   "dependencies": {
-    "com.lwt.editor-browser": "https://github.com/dldnjsxo95/UnityEditorBrowser.git#v0.4.9"
+    "com.lwt.editor-browser": "https://github.com/dldnjsxo95/UnityEditorBrowser.git#v0.4.10"
   }
 }
 ```
 
-The `#v0.4.9` tag locks the version. Omit it to always follow `main`.
+The `#v0.4.10` tag locks the version. Omit it to always follow `main`.
 
 Unity Package Manager fetches and compiles the package automatically. The
 menu item `Window > Editor Browser` and the shortcut `Shift + Alt + W`
@@ -55,7 +55,7 @@ become available immediately.
 If you use [Claude Code](https://claude.com/claude-code) with the
 [UnityMCP](https://github.com/CoplayDev/unity-mcp) bridge, the package
 ships a `/eb <natural-language>` slash command that drives the browser
-via the `editor_browser` MCP tool (e.g. `/eb open naver and search 맛집`).
+via the `editor_browser` MCP tool (e.g. `/eb open google and search "unity dockable window"`).
 
 **Install (recommended, since v0.4.9):**
 

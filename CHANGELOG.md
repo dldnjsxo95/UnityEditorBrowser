@@ -3,6 +3,22 @@
 This package follows [Keep a Changelog](https://keepachangelog.com/) and
 [SemVer](https://semver.org/).
 
+## [0.4.10] - 2026-05-22
+
+### Docs
+- README and CHANGELOG are now English-only. Two remaining Korean
+  fragments were translated to English:
+  - README install/usage example: the `/eb` sample command no longer
+    contains a Korean search term.
+  - CHANGELOG entry for v0.2.3 quoted a Korean Unity warning string
+    verbatim; the quoted text is now in English while preserving the
+    meaning.
+- README install snippet pin bumped `#v0.4.9` → `#v0.4.10`.
+
+### Notes
+- No package source, asmdef, or behavior changes — purely a
+  documentation-language patch.
+
 ## [0.4.9] - 2026-05-22
 
 ### Added
@@ -314,7 +330,7 @@ future Protocol/Page, Protocol/Runtime, and McpTools layers will build on.
 ## [0.2.3] - 2026-05-21
 
 ### Changed
-- Silenced the noisy `CREATE_BREAKAWAY_FROM_JOB 거부 ... fallback 재시도`
+- Silenced the noisy `CREATE_BREAKAWAY_FROM_JOB rejected ... fallback retry`
   warning that fired on every spawn on Unity 2022.3. The fallback is a
   normal, expected path; only the fallback **failure** case still logs.
 
