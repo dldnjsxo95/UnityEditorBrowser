@@ -48,6 +48,12 @@ namespace EditorBrowser
         private bool _disposed;
         private DateTime _processStartUtc;
 
+        // Actual DevTools port assigned by the OS via --remote-debugging-port=0.
+        // Discovered by reading <user-data-dir>/DevToolsActivePort after
+        // Chrome starts. Volatile because Navigate's background Task may
+        // observe and write this from a worker thread.
+        private volatile int _discoveredDevToolsPort;
+
         // Reparenting before Chrome's rendering surface is initialized turns
         // the page black, and moving the window before first paint shows
         // empty content. Wait at least this long after spawn before attach.
@@ -94,14 +100,21 @@ namespace EditorBrowser
             if (IsAlive)
             {
                 // CDP call does sync HTTP + WebSocket waits; run on a
-                // background Task so the main thread isn't blocked.
-                // Fire-and-forget: response (~50-200ms) is uninteresting.
+                // background Task so the main thread isn't blocked. Port
+                // discovery (file read with brief retry) also lives on the
+                // worker thread so we never block Unity. Fire-and-forget:
+                // response (~50-200ms) is uninteresting.
                 var captured = url;
                 System.Threading.Tasks.Task.Run(() =>
                 {
                     // Unity API calls are unsafe off the main thread, so
                     // swallow exceptions silently rather than logging.
-                    try { CdpNavigate(captured); }
+                    try
+                    {
+                        var port = _discoveredDevToolsPort;
+                        if (port <= 0) port = WaitForDevToolsPort();
+                        if (port > 0) CdpNavigate(captured, port);
+                    }
                     catch { }
                 });
                 return;
@@ -112,18 +125,20 @@ namespace EditorBrowser
 
         /// <summary>
         /// Send Chrome DevTools Protocol <c>Page.navigate</c> to swap the
-        /// current page URL without restarting Chrome. Requires
-        /// <c>--remote-debugging-port=9222</c> in the spawn args.
+        /// current page URL without restarting Chrome. The port is the OS-
+        /// assigned one discovered from Chrome's <c>DevToolsActivePort</c>
+        /// file (see <see cref="WaitForDevToolsPort"/>).
         /// Called from a background thread — must not touch Unity APIs.
         /// </summary>
-        private static bool CdpNavigate(string url)
+        private static bool CdpNavigate(string url, int port)
         {
             // Use 127.0.0.1 explicitly. With "localhost" the .NET DNS
             // resolver tries IPv6 (::1) first and falls back to IPv4 only
             // after a ~2 second timeout, adding that flat 2s to every
             // ConnectAsync. Direct IPv4 brings it down to a few ms.
             string listJson;
-            var req = (System.Net.HttpWebRequest)System.Net.WebRequest.Create("http://127.0.0.1:9222/json/list");
+            var req = (System.Net.HttpWebRequest)System.Net.WebRequest.Create(
+                "http://127.0.0.1:" + port.ToString(System.Globalization.CultureInfo.InvariantCulture) + "/json/list");
             req.Timeout = 1500;
             using (var resp = (System.Net.HttpWebResponse)req.GetResponse())
             using (var sr = new System.IO.StreamReader(resp.GetResponseStream()))
@@ -166,6 +181,64 @@ namespace EditorBrowser
         private static string EscapeJsonString(string s)
         {
             return s.Replace("\\", "\\\\").Replace("\"", "\\\"");
+        }
+
+        /// <summary>
+        /// Wait briefly for Chrome to write its DevTools port to
+        /// <c>&lt;user-data-dir&gt;/DevToolsActivePort</c>. Chrome creates
+        /// this file once the remote-debugging listener is bound; with
+        /// <c>--remote-debugging-port=0</c> the first line is the OS-
+        /// assigned port (the second line is the browser WS endpoint prefix,
+        /// which we don't need since we ask <c>/json/list</c> for the page
+        /// target's URL).
+        /// <para>Caches into <see cref="_discoveredDevToolsPort"/> on first
+        /// success. Polls up to ~2s on the calling (background) thread.</para>
+        /// </summary>
+        private int WaitForDevToolsPort()
+        {
+            if (_discoveredDevToolsPort > 0) return _discoveredDevToolsPort;
+            var portFile = Path.Combine(UserDataDirRoot, "DevToolsActivePort");
+            for (int i = 0; i < 20; i++)
+            {
+                int p = ReadDevToolsActivePortFile(portFile);
+                if (p > 0)
+                {
+                    _discoveredDevToolsPort = p;
+                    return p;
+                }
+                System.Threading.Thread.Sleep(100);
+            }
+            return 0;
+        }
+
+        /// <summary>
+        /// Single non-blocking read of the DevToolsActivePort file. Returns
+        /// 0 if the file is missing, locked, or malformed.
+        /// </summary>
+        private static int ReadDevToolsActivePortFile(string portFile)
+        {
+            if (!File.Exists(portFile)) return 0;
+            try
+            {
+                // Chrome rewrites this file atomically, but it can briefly
+                // be locked between truncation and rewrite — hence the
+                // catch-all. Open with FileShare.ReadWrite so we don't
+                // collide with Chrome's writer.
+                using (var fs = new FileStream(portFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                using (var sr = new StreamReader(fs))
+                {
+                    var firstLine = sr.ReadLine();
+                    if (!string.IsNullOrWhiteSpace(firstLine)
+                        && int.TryParse(firstLine.Trim(), System.Globalization.NumberStyles.Integer,
+                            System.Globalization.CultureInfo.InvariantCulture, out var port)
+                        && port > 0)
+                    {
+                        return port;
+                    }
+                }
+            }
+            catch { }
+            return 0;
         }
 
         /// <summary>
@@ -292,11 +365,15 @@ namespace EditorBrowser
             var spawnY = bodyY;
             var spawnW = Math.Max(bodyW, 200);
             var spawnH = Math.Max(bodyH, 200);
+            // --remote-debugging-port=0 lets the OS pick a free port to
+            // avoid conflicts with any other Chrome instance the user has
+            // running. The chosen port is discovered post-launch via the
+            // DevToolsActivePort file Chrome writes inside user-data-dir.
             var args =
                 $"--app={url} " +
                 $"--user-data-dir=\"{UserDataDirRoot}\" " +
                 "--no-first-run --no-default-browser-check --disable-popup-blocking " +
-                "--remote-debugging-port=9222 " +
+                "--remote-debugging-port=0 " +
                 $"--window-position={spawnX},{spawnY} --window-size={spawnW},{spawnH}";
 
             // Unity puts child processes into a Job Object whose limits
@@ -370,6 +447,7 @@ namespace EditorBrowser
             _visible = false;
             _processStartUtc = DateTime.UtcNow;
             _lastX = _lastY = _lastW = _lastH = int.MinValue;
+            _discoveredDevToolsPort = 0;
         }
 
         /// <summary>
@@ -434,6 +512,17 @@ namespace EditorBrowser
             _browserHwnd = found;
             _attached = true;
             _visible = false;
+
+            // Opportunistic single-shot read. By AttachMinDelay (1.2s)
+            // Chrome has typically written DevToolsActivePort. If it
+            // hasn't, WaitForDevToolsPort on the next Navigate's worker
+            // thread will retry.
+            if (_discoveredDevToolsPort == 0)
+            {
+                var portFile = Path.Combine(UserDataDirRoot, "DevToolsActivePort");
+                var p = ReadDevToolsActivePortFile(portFile);
+                if (p > 0) _discoveredDevToolsPort = p;
+            }
             return true;
         }
 
@@ -556,6 +645,7 @@ namespace EditorBrowser
             _attached = false;
             _visible = false;
             _lastX = _lastY = _lastW = _lastH = int.MinValue;
+            _discoveredDevToolsPort = 0;
         }
     }
 }

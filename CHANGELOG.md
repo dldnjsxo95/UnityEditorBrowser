@@ -3,6 +3,35 @@
 This package follows [Keep a Changelog](https://keepachangelog.com/) and
 [SemVer](https://semver.org/).
 
+## [0.4.2] - 2026-05-22
+
+### Changed
+- Replaced the hardcoded `--remote-debugging-port=9222` with
+  `--remote-debugging-port=0`. The OS picks a free port at Chrome startup,
+  eliminating conflicts with any unrelated Chrome / debugger instance the
+  user may have on 9222.
+- Chrome writes the chosen port to `<user-data-dir>/DevToolsActivePort`
+  immediately after the remote-debugging listener binds. The host now
+  discovers the port from this file:
+  - `TryAttach` does an opportunistic single-shot read at the end of a
+    successful attach (Chrome has been alive ≥1.2s by then, so the file
+    is almost always present).
+  - If still 0 at the next `Navigate`, the background Task retries via
+    `WaitForDevToolsPort` (100ms × 20, ≤2s budget) so the main thread is
+    never blocked.
+- `CdpNavigate` refactored to accept the discovered port as a parameter
+  rather than hardcoding `127.0.0.1:9222`.
+- `_discoveredDevToolsPort` resets on `Start` and `DisposeProcess` so a
+  stale value from a prior Chrome session can never leak into the next.
+
+### Verified
+- Spawned Chrome with `--remote-debugging-port=0`, observed
+  `DevToolsActivePort` populated with `8311\n/devtools/browser/<uuid>`.
+- `_discoveredDevToolsPort` populated correctly after `TryAttach`.
+- End-to-end CDP navigation works: `Navigate("https://example.com/")`
+  swapped the page via the discovered port (confirmed by direct
+  `/json/list` query showing the new URL).
+
 ## [0.4.1] - 2026-05-22
 
 ### Changed
